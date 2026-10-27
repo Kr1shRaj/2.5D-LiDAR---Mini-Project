@@ -14,12 +14,12 @@ Every number below was measured on these slices on a shared 4-core cloud VM; tim
 | Question | Answer (measured) |
 |---|---|
 | Does foveation cut memory? | Yes. Rendered map 4.70 MB vs 9.47 MB uniform (−50 %); stored cells 6.96 vs 8.75 MB (−20 %). |
-| Is it faster? | Slightly. Map update + render PHASE5_MAP_FOV ms vs PHASE5_MAP_UNI ms median per scan. |
+| Is it faster? | Slightly. Map update + render 52.3 ms vs 54.8 ms median per scan. |
 | Does it keep near-field detail? | Yes. Sharp curbs kept within 10 m: 50 % vs 42 % of all curb edges (uniform 20 cm). |
 | What does it cost? | Far field (25–50 m, 50 cm cells): curbs flattened (8 % vs 19 % kept), ground error 0.096 vs 0.071 m median. |
 | Does temporal fusion help? | Strongly. Near coverage 39 % → 96 %; curbs kept 13 % → 41 % (seq 00). Ghost area −55 % with clearing. |
 | Does the hazard model help? | Yes over a threshold rule; but the model scores higher on the uniform map than on the foveated map. |
-| Real time (10 Hz, 100 ms)? | PHASE5_RT_SUMMARY |
+| Real time (10 Hz, 100 ms)? | Median yes: map + model labeling 77 ms (p95 99.6 ms). 5 % of scans exceed 100 ms. The model only labels 0–25 m. |
 
 ## 2. Problem
 
@@ -142,15 +142,116 @@ CPU: one-sort per-cell kernel and known bounding boxes took the fused update fro
   scans show flat ground. That window is unusable as truth; the test slice was moved to frames 1500+ and the training
   script now rejects slices whose poses climb more than 10 % of path length.
 
-PHASE4_TABLE
+Test on seq 08, 540,000 sampled spots (random forest, 8 trees, depth 12):
+
+| Class | Model P / R / F1 | Rule on same map P / R / F1 | Support |
+|---|---|---|---|
+| traversable | 0.53 / 0.46 / 0.49 | 0.39 / 0.74 / 0.51 | 98,929 |
+| potentially hazardous | 0.17 / 0.38 / 0.23 | 0.09 / 0.34 / 0.14 | 30,237 |
+| obstacle | 0.64 / 0.60 / 0.62 | 0.54 / 0.51 / 0.52 | 161,389 |
+| unknown | 0.73 / 0.68 / 0.71 | 0.54 / 0.18 / 0.27 | 249,445 |
+| **macro F1** | **0.513** | 0.361 | |
+| true obstacle called traversable | **7.5 %** | 18.9 % | |
+
+Model confusion matrix (rows = truth, columns = predicted):
+
+| truth \ pred | traversable | hazardous | obstacle | unknown |
+|---|---|---|---|---|
+| traversable | 45,442 | 27,258 | 8,553 | 17,676 |
+| potentially hazardous | 8,869 | 11,463 | 4,687 | 5,218 |
+| obstacle | 12,044 | 11,886 | 97,301 | 40,158 |
+| unknown | 18,920 | 18,411 | 41,409 | 170,705 |
+
+- Macro F1 by ring (model / rule): 2–10 m 0.570 / 0.489, 10–25 m 0.498 / 0.429, 25–50 m 0.450 / 0.289.
+- The hazardous class is the weakest (F1 0.23): it is rare (5.6 % of test spots) and partly invisible in a sparse
+  live map. Raising the roughness threshold from 5 to 8 cm removed noise stripes on flat road (truth traversable
+  14 % → 18 %) but did not raise macro F1 (0.526 → 0.519 with the earlier boosted-tree model).
+- Model choice (seq 00 hold-out only): gradient boosted trees 300 rounds 0.537, 15 rounds 0.532, random forest
+  8 trees 0.528, single tree 0.517. The forest was kept because boosted trees paid ~1 ms per tree in the live
+  loop (thread wake-up) and could not meet the 100 ms budget.
 
 ### Phase 5 — Benchmark triad (train seq 00 0–299, test seq 08 1500–1799)
 
-PHASE5_TABLES
+Same test slice for every configuration. Configs 1–2 label hazards with the threshold rule; config 3 runs the
+random forest on the 0–25 m reaction zone through an incremental labeler (re-labels a cell only when it is new,
+its obstacle state flips, its top moves > 10 cm, or its label is 0.3 s old) and the rule beyond 25 m.
+
+**Cost per scan** (all 300 scans, preprocessing excluded):
+
+| Config | Map ms med / p95 | Label ms med / p95 | Cells labelled / scan | **Total ms med / p95** | Scans > 100 ms | Stored MB | Rendered MB |
+|---|---|---|---|---|---|---|---|
+| 1 uniform (20 cm) | 54.8 / 76.6 | – | – | 54.8 / 76.6 | 0.0 % | 8.75 | 9.47 |
+| 2 foveated (F-A) | 52.3 / 69.0 | – | – | 52.3 / 69.0 | 0.3 % | 6.96 | 4.70 |
+| 3 foveated + model | 52.3 / 69.0 | 25.0 / 34.8 | 13,141 | **77.4 / 99.6** | 5.0 % | 6.96 | 4.70 |
+| (extra) uniform + model | 54.8 / 76.6 | 19.0 / 29.0 | 7,530 | 74.2 / 104.4 | 7.4 % | 8.75 | 9.47 |
+
+**Height reconstruction vs dense reference** (ground, metres):
+
+| Map | Ring | Coverage | Error median | Error p95 |
+|---|---|---|---|---|
+| uniform | 2–10 m | 98 % | 0.029 | 0.457 |
+| foveated | 2–10 m | 98 % | 0.034 | 0.407 |
+| uniform | 10–25 m | 85 % | 0.052 | 0.809 |
+| foveated | 10–25 m | 89 % | 0.055 | 0.829 |
+| uniform | 25–50 m | 63 % | 0.071 | 1.398 |
+| foveated | 25–50 m | 73 % | 0.096 | 1.550 |
+
+**Preservation** (curbs: share of all reference curb edges kept, probes 20 cm apart):
+
+| Map | Curbs 2–10 m | Curbs 10–25 m | Curbs 25–50 m | Obstacle recall | Area bloat | Ghost area |
+|---|---|---|---|---|---|---|
+| uniform | 42 % | 23 % | 19 % | 100 % | 1.51× | 1,165 m² |
+| foveated | **50 %** | 24 % | 8 % | 100 % | 1.47× | 1,386 m² |
+
+**Hazard labels** (P / R / F1):
+
+| Config | Macro F1 | Traversable | Hazardous | Obstacle | Unknown | Obstacle → traversable |
+|---|---|---|---|---|---|---|
+| 1 uniform, rule | 0.385 | 0.41 / 0.62 / 0.49 | 0.10 / 0.34 / 0.16 | 0.65 / 0.46 / 0.54 | 0.43 / 0.31 / 0.36 | 17.1 % |
+| 2 foveated, rule | 0.346 | 0.38 / 0.65 / 0.48 | 0.08 / 0.33 / 0.13 | 0.55 / 0.50 / 0.52 | 0.44 / 0.18 / 0.25 | 19.0 % |
+| 3 foveated + model (0–25 m) | 0.358 | 0.38 / 0.58 / 0.46 | 0.09 / 0.38 / 0.14 | 0.56 / 0.54 / 0.55 | 0.45 / 0.20 / 0.28 | 14.8 % |
+| (extra) uniform + model (0–25 m) | 0.406 | 0.43 / 0.57 / 0.49 | 0.12 / 0.37 / 0.18 | 0.67 / 0.48 / 0.56 | 0.44 / 0.37 / 0.40 | 13.7 % |
+| (offline) foveated + model, all rings | 0.476 | 0.51 / 0.47 / 0.49 | 0.13 / 0.44 / 0.20 | 0.67 / 0.51 / 0.58 | 0.64 / 0.63 / 0.63 | 10.7 % |
+
+**Hazard by ring** (macro F1 / true obstacle called traversable):
+
+| Config | 2–25 m (reaction zone) | 2–10 m | 10–25 m | 25–50 m |
+|---|---|---|---|---|
+| 1 uniform, rule | 0.437 / 23.5 % | 0.448 / 33.4 % | 0.424 / 20.9 % | 0.333 / 12.3 % |
+| 2 foveated, rule | 0.419 / 25.9 % | 0.442 / 42.1 % | 0.406 / 21.8 % | 0.292 / 13.7 % |
+| **3 foveated + model** | **0.472 / 16.0 %** | 0.502 / 28.8 % | 0.455 / 12.7 % | 0.292 / 13.7 % |
+| (extra) uniform + model | 0.518 / 15.5 % | 0.532 / 26.1 % | 0.500 / 12.8 % | 0.334 / 12.3 % |
+
+The whole-slice macro F1 of config 3 (0.358) is pulled down by the 25–50 m ring, which holds 62 % of the
+sampled spots and still uses the rule; inside the reaction zone the model lifts macro F1 from 0.419 to 0.472
+and cuts obstacle-called-traversable from 25.9 % to 16.0 %.
 
 ## 5. Measured trade-offs
 
-PHASE5_TRADEOFFS
+1. **Memory: foveation wins.** Half the rendered map (4.70 vs 9.47 MB) and 20 % less stored state, with
+   similar map latency (52 vs 55 ms).
+2. **Near field: foveation wins.** 10 cm cells keep more sharp curbs within 10 m (50 % vs 42 %) and a lower
+   near-field ground p95 error (0.41 vs 0.46 m). It needs temporal fusion and coarse-to-fine seeding to pay
+   off: on single scans, 10 cm cells were too sparse.
+3. **Far field: foveation loses accuracy, gains coverage.** 50 cm cells see more of the far ring (73 % vs 63 %)
+   but flatten curbs (8 % vs 19 % kept) and raise ground error (0.096 vs 0.071 m median).
+4. **Obstacles are never lost** (100 % recall in every map) — a coarse cell keeps the highest point; the price is
+   area bloat (~1.5×). Ghost trails are cut 55 % by clearing (seq 00) but foveated maps still show 19 % more
+   ghost area than uniform on seq 08.
+5. **Learned labels beat thresholds** on the same map (macro F1 +0.15, obstacle-called-traversable 18.9 % →
+   7.5 % in Phase 4). **But the model is better on the uniform map** (0–25 m macro F1 0.518 vs 0.472): coarse
+   and placeholder cells make features noisier. Foveation helps the map more than it helps the classifier.
+6. **Real time is reached at the median, not with margin.** Map + incremental labeler runs at 77 ms median,
+   99.6 ms p95; 5 % of scans exceed 100 ms. Getting there required a sparse one-sort cell kernel, O(1) cell
+   lookup, batched feature probes, model labels only in the 0–25 m zone, event-driven re-labeling and a
+   thread-free random forest instead of boosted trees (−0.004 hold-out F1).
+
+### Next steps
+
+- Close the foveated vs uniform gap for the classifier (neighbour context features, or label the far ring on a
+  finer virtual grid).
+- Cut p95 latency (render and hand-off still ~20 ms; a compiled implementation would remove most Python overhead).
+- Validate on more sequences and with SemanticKITTI labels for moving objects.
 
 ## 6. Limitations
 

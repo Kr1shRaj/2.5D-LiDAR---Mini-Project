@@ -9,6 +9,10 @@ pip install -r requirements.txt
 pytest
 ```
 
+## Report
+
+Full project report with all five phases, architecture and benchmark tables: [`docs/REPORT.md`](docs/REPORT.md).
+
 ## Layout
 
 - `src/io/` — KITTI / SemanticKITTI loader (`.bin`, `.label`, `calib.txt`, `poses.txt`)
