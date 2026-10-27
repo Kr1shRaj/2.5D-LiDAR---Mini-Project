@@ -16,3 +16,12 @@ pytest
 - `src/mapping/` — uniform 2.5D grid (Phase 1)
 - `src/viz/` — top-down elevation + roughness plots
 - `tests/` — synthetic tests
+
+## Real data check (KITTI odometry seq 00)
+
+```bash
+python scripts/fetch_kitti_slice.py --seq 00 --count 100   # ~190 MB, range-read from KITTI zip
+python -m scripts.check_ground                              # near-field ground stats + top-down PNG in outputs/
+```
+
+KITTI data is CC BY-NC-SA 3.0. Stays in `data/` (git ignored).

@@ -13,7 +13,15 @@ UNOBSERVED_COLOR = "#bdbdbd"
 
 
 # draw one layer top down. x right, y up. nan cells = grey unobserved.
-def _draw_layer(ax: plt.Axes, layer: np.ndarray, layers: GridLayers, title: str, cmap: str, label: str) -> None:
+def _draw_layer(
+    ax: plt.Axes,
+    layer: np.ndarray,
+    layers: GridLayers,
+    title: str,
+    cmap: str,
+    label: str,
+    vmax: float | None = None,
+) -> None:
     spec = layers.spec
     cm = plt.get_cmap(cmap).copy()
     cm.set_bad(UNOBSERVED_COLOR)
@@ -24,6 +32,7 @@ def _draw_layer(ax: plt.Axes, layer: np.ndarray, layers: GridLayers, title: str,
         extent=(spec.x_min, spec.x_max, spec.y_min, spec.y_max),
         cmap=cm,
         interpolation="nearest",
+        vmax=vmax,
     )
     ax.set_title(title)
     ax.set_xlabel(f"x [m] ({spec.frame})")
@@ -36,7 +45,10 @@ def _draw_layer(ax: plt.Axes, layer: np.ndarray, layers: GridLayers, title: str,
 def plot_elevation_and_roughness(layers: GridLayers, out_path: str | Path | None = None) -> Figure:
     fig, (ax_elev, ax_rough) = plt.subplots(1, 2, figsize=(13, 5.5), constrained_layout=True)
     _draw_layer(ax_elev, layers.z_max, layers, "Max elevation", "viridis", "z max [m]")
-    _draw_layer(ax_rough, layers.roughness, layers, "Roughness (z std)", "magma", "z std [m]")
+    # clip colour at p95 so few tall poles do not wash out curbs
+    rough = layers.roughness
+    rough_vmax = float(np.nanpercentile(rough, 95)) if layers.observed.any() else None
+    _draw_layer(ax_rough, rough, layers, "Roughness (z std, clip p95)", "magma", "z std [m]", vmax=rough_vmax)
     observed = int(layers.observed.sum())
     total = layers.count.size
     fig.suptitle(
