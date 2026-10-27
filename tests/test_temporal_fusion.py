@@ -12,6 +12,7 @@ from src.temporal.fusion import (
     integrate_obs,
     merge_children,
     scan_observation,
+    split_into_children,
 )
 from src.temporal.terrain import local_terrain
 
@@ -167,8 +168,63 @@ def test_handoff_moves_fine_history_to_coarse() -> None:
     p2 = pose(10.0, 0.0)  # box ~ 7.5 m away -> mid ring
     m.integrate(np.empty((0, 3)), p1, t=0.1)
     m.integrate(np.empty((0, 3)), p2, t=0.2)
-    assert m.stores[0].size < n_fine
+    assert int((~m.stores[0].inherited).sum()) < n_fine  # real fine cells left ring
     top = m.render().sample(np.array([[2.5, 2.5]]), "z_max")
     assert top == pytest.approx([GROUND_Z + 1.5], abs=0.05)  # old fine obstacle kept after hand-off
     band_idx, _ = m.render().lookup(np.array([[2.5, 2.5]]))
     assert band_idx.tolist() == [1]
+
+
+def test_split_children_cover_parent_and_merge_back() -> None:
+    for coarse_res, fine_res, kids in ((0.2, 0.1, 4), (0.5, 0.1, 25)):
+        parent = empty_store(coarse_res)
+        obs = scan_observation(np.array([[-0.3, 0.7, 1.0], [-0.3, 0.7, 2.0]]), coarse_res, 10.0)
+        parent = integrate_obs(parent, obs, np.array([np.nan]), 0.0, PARAMS)
+        ch = split_into_children(parent, fine_res)
+        assert ch.size == kids and ch.inherited.all()
+        assert np.allclose(ch.mean, 1.5) and np.allclose(ch.z_max, 2.0)
+        back = merge_children(empty_store(coarse_res), ch)
+        assert back.size == 1 and back.keys[0] == parent.keys[0]
+        assert back.mean[0] == pytest.approx(1.5) and back.inherited[0]
+
+
+def test_split_non_nested_lattice_partitions_children() -> None:
+    parents = empty_store(0.5)
+    xy = np.array([[x + 0.25, 0.25] for x in np.arange(-2.0, 2.0, 0.5)])
+    obs = scan_observation(np.column_stack([xy, np.zeros(len(xy))]), 0.5, 10.0)
+    parents = integrate_obs(parents, obs, np.full(len(xy), np.nan), 0.0, PARAMS)
+    ch = split_into_children(parents, 0.2)
+    assert np.unique(ch.keys).size == ch.size  # no child shared by two parents
+    ix, _ = decode_keys(ch.keys)
+    assert sorted(set(ix.tolist())) == list(range(-10, 10))  # every 0.2 m column from -2 to 2 m covered once
+
+
+def test_first_fine_scan_replaces_inherited_stats() -> None:
+    parent = empty_store(0.2)
+    obs = scan_observation(np.array([[0.1, 0.1, 5.0]]), 0.2, 10.0)
+    parent = integrate_obs(parent, obs, np.array([GROUND_Z]), 0.0, PARAMS)  # tall: hit
+    ch = split_into_children(parent, 0.1)
+    assert ch.logodds[0] > 0
+    fine_obs = scan_observation(np.array([[0.05, 0.05, GROUND_Z]]), 0.1, 10.0)
+    ch = integrate_obs(ch, fine_obs, np.array([GROUND_Z]), 0.1, PARAMS)
+    k = int(np.searchsorted(ch.keys, fine_obs.keys[0]))
+    assert not ch.inherited[k]
+    assert ch.z_max[k] == pytest.approx(GROUND_Z) and ch.ground[k] == pytest.approx(GROUND_Z)
+    assert ch.n_obs[k] == 1 and ch.weight[k] == pytest.approx(1.0) and ch.logodds[k] < 0
+    assert ch.inherited.sum() == 3  # siblings still placeholders
+
+
+def test_cells_ahead_prefilled_from_coarse_history() -> None:
+    rng = np.random.default_rng(seed=27)
+    m = TemporalFoveatedMap(BANDS, PARAMS)
+    p0 = pose(0.0, 0.0)
+    m.integrate(to_velo(road(rng, 0.0, 0.0), p0), p0, t=0.0)
+    ahead = np.array([[8.0, 0.0], [9.0, 1.0]])  # mid ring now
+    assert np.isfinite(m.render().sample(ahead, "ground")).all()
+    p1 = pose(4.0, 0.0)  # drive forward, no scan: those spots now in fine ring
+    m.integrate(np.empty((0, 3)), p1, t=0.1)
+    fov = m.render()
+    band_idx, _ = fov.lookup(ahead)
+    assert band_idx.tolist() == [0, 0]
+    assert np.allclose(fov.sample(ahead, "ground"), GROUND_Z)
+    assert np.all(fov.sample(ahead, "inherited") == 1.0)

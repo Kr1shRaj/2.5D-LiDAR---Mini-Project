@@ -13,7 +13,9 @@ from src.temporal.terrain import local_terrain
 # Each scan counts as one observation per cell (weight 1); old weight decays with time.
 # ground = decayed weighted mean of per-scan cell ground (per-scan ground = p-th percentile, as phase 1).
 # Obstacle evidence = log-odds per cell: hit if scan z max rises obstacle_h over local terrain.
-# Hand-off: cell whose centre leaves its ring outward merges into next coarser lattice.
+# Hand-off out: cell whose centre leaves its ring outward merges into next coarser lattice.
+# Hand-off in: coarse cell whose centre enters finer ring splits into fine children that copy
+# parent stats, flagged `inherited`. First real fine scan of child replaces copied stats.
 
 KEY_SHIFT = 2**31
 
@@ -48,6 +50,7 @@ class FusionParams:
     terrain_cell: float
     ground_percentile: float
     clear_ghosts: bool = True  # False = naive max fusion, keeps every old z max
+    seed_children: bool = True  # False = coarse cell entering finer ring stays hidden, fine cell starts empty
 
 
 # sparse cell layers for one band lattice. arrays line up with sorted unique keys.
@@ -64,6 +67,7 @@ class CellStore:
     logodds: np.ndarray
     last_seen: np.ndarray
     n_obs: np.ndarray
+    inherited: np.ndarray  # True = placeholder copied from coarse parent, no own fine scan yet
 
     @property
     def size(self) -> int:
@@ -76,12 +80,14 @@ class CellStore:
 
 ARRAY_FIELDS = [f.name for f in fields(CellStore) if f.name != "resolution"]
 FILL = {"keys": 0, "weight": 0.0, "mean": np.nan, "m2": 0.0, "z_min": np.nan, "z_max": np.nan,
-        "ground": np.nan, "logodds": 0.0, "last_seen": -np.inf, "n_obs": 0}
+        "ground": np.nan, "logodds": 0.0, "last_seen": -np.inf, "n_obs": 0,
+        "inherited": False}
+DTYPES = {"keys": np.int64, "n_obs": np.int64, "inherited": bool}
 
 
 # empty store for one lattice
 def empty_store(resolution: float) -> CellStore:
-    arrays = {n: np.empty(0, dtype=np.int64 if n in ("keys", "n_obs") else np.float64) for n in ARRAY_FIELDS}
+    arrays = {n: np.empty(0, dtype=DTYPES.get(n, np.float64)) for n in ARRAY_FIELDS}
     return CellStore(resolution=resolution, **arrays)
 
 
@@ -111,13 +117,20 @@ class ScanObs:
     ground: np.ndarray
 
 
-# bin world points of one scan on world lattice of `resolution`
-def scan_observation(points_world: np.ndarray, resolution: float, ground_percentile: float) -> ScanObs:
+# bin world points of one scan on world lattice of `resolution`. bounds = known xy box, skips min/max pass.
+def scan_observation(
+    points_world: np.ndarray,
+    resolution: float,
+    ground_percentile: float,
+    bounds: tuple[float, float, float, float] | None = None,
+) -> ScanObs:
     if len(points_world) == 0:
         e = np.empty(0)
         return ScanObs(np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64), e, e, e, e, e)
-    lo, hi = points_world[:, :2].min(axis=0), points_world[:, :2].max(axis=0)
-    spec = spec_from_bounds(lo[0], hi[0] + 1e-9, lo[1], hi[1] + 1e-9, resolution, frame="world")
+    if bounds is None:
+        lo, hi = points_world[:, :2].min(axis=0), points_world[:, :2].max(axis=0)
+        bounds = (lo[0], hi[0] + 1e-9, lo[1], hi[1] + 1e-9)
+    spec = spec_from_bounds(*bounds, resolution, frame="world")
     g = build_uniform_grid(points_world, spec, points_frame="world", ground_percentile=ground_percentile)
     ix, iy = np.nonzero(g.observed)
     keys = encode_keys(ix + int(round(spec.x_min / resolution)), iy + int(round(spec.y_min / resolution)))
@@ -137,23 +150,25 @@ def integrate_obs(store: CellStore, obs: ScanObs, terrain_z: np.ndarray, t: floa
     new["keys"] = keys
     oi = np.searchsorted(keys, obs.keys)
 
-    w0 = new["weight"][oi]
-    seen = new["n_obs"][oi] > 0
+    # inherited placeholder meets first real fine scan: forget copied stats, start fresh
+    seen = (new["n_obs"][oi] > 0) & ~new["inherited"][oi]
+    w0 = np.where(seen, new["weight"][oi], 0.0)
     m0 = np.where(seen, new["mean"][oi], 0.0)
     g0 = np.where(seen, new["ground"][oi], 0.0)
+    m2_0 = np.where(seen, new["m2"][oi], 0.0)
     w1 = w0 + 1.0
     # weighted merge of old cell (weight w0) with this scan (weight 1)
     new["mean"][oi] = (w0 * m0 + obs.mean) / w1
-    new["m2"][oi] = new["m2"][oi] + obs.var + (obs.mean - m0) ** 2 * w0 / w1
+    new["m2"][oi] = m2_0 + obs.var + (obs.mean - m0) ** 2 * w0 / w1
     new["ground"][oi] = (w0 * g0 + obs.ground) / w1
-    new["z_min"][oi] = np.fmin(new["z_min"][oi], obs.z_min)
+    new["z_min"][oi] = np.fmin(np.where(seen, new["z_min"][oi], np.nan), obs.z_min)
 
     known = np.isfinite(terrain_z)
     hit = known & (obs.z_max - terrain_z >= params.obstacle_h)
     miss = known & ~hit
-    l1 = np.clip(new["logodds"][oi] + np.where(hit, params.l_hit, 0.0) + np.where(miss, params.l_miss, 0.0),
+    l1 = np.clip(np.where(seen, new["logodds"][oi], 0.0) + np.where(hit, params.l_hit, 0.0) + np.where(miss, params.l_miss, 0.0),
                  params.l_min, params.l_max)
-    zmax_keep = np.fmax(new["z_max"][oi], obs.z_max)
+    zmax_keep = np.fmax(np.where(seen, new["z_max"][oi], np.nan), obs.z_max)
     if params.clear_ghosts:
         # cell now seen free and no longer believed occupied: drop old z max, trust this scan
         new["z_max"][oi] = np.where(miss & (l1 <= 0.0), obs.z_max, zmax_keep)
@@ -162,7 +177,8 @@ def integrate_obs(store: CellStore, obs: ScanObs, terrain_z: np.ndarray, t: floa
     new["logodds"][oi] = l1
     new["weight"][oi] = w1
     new["last_seen"][oi] = t
-    new["n_obs"][oi] = new["n_obs"][oi] + 1
+    new["n_obs"][oi] = np.where(seen, new["n_obs"][oi], 0) + 1
+    new["inherited"][oi] = False
     return CellStore(resolution=store.resolution, **new)
 
 
@@ -192,7 +208,44 @@ def merge_children(coarse: CellStore, fine: CellStore) -> CellStore:
     np.maximum.at(n_obs, inv, cat["n_obs"])
     out["n_obs"] = n_obs
     out["m2"] = out["weight"] * var
+    # merged cell is placeholder only if every part was placeholder
+    out["inherited"] = np.bincount(inv, weights=(~cat["inherited"]).astype(np.float64), minlength=keys.size) == 0
     return CellStore(resolution=res, **out)
+
+
+# split coarse cells into fine children (centres inside parent). children copy parent stats, flagged inherited.
+def split_into_children(coarse: CellStore, fine_res: float) -> CellStore:
+    if coarse.size == 0:
+        return empty_store(fine_res)
+    res = coarse.resolution
+    pix, piy = decode_keys(coarse.keys)
+    # child centre (i + 0.5) * f must sit in [parent_lo, parent_lo + res); eps keeps edge centre with upper parent
+    lo_x = np.ceil(pix * res / fine_res - 0.5 - 1e-9).astype(np.int64)
+    hi_x = np.ceil((pix + 1) * res / fine_res - 0.5 - 1e-9).astype(np.int64)
+    lo_y = np.ceil(piy * res / fine_res - 0.5 - 1e-9).astype(np.int64)
+    hi_y = np.ceil((piy + 1) * res / fine_res - 0.5 - 1e-9).astype(np.int64)
+    m = int(np.ceil(res / fine_res)) + 1
+    off = np.arange(m)
+    cx = lo_x[:, None, None] + off[None, :, None]
+    cy = lo_y[:, None, None] + off[None, None, :]
+    valid = (cx < hi_x[:, None, None]) & (cy < hi_y[:, None, None])
+    parent = np.broadcast_to(np.arange(coarse.size)[:, None, None], valid.shape)[valid]
+    keys = encode_keys(np.broadcast_to(cx, valid.shape)[valid], np.broadcast_to(cy, valid.shape)[valid])
+    out = {n: getattr(coarse, n)[parent] for n in ARRAY_FIELDS if n != "keys"}
+    out["inherited"] = np.ones(keys.size, dtype=bool)
+    order = np.argsort(keys)
+    return CellStore(resolution=fine_res, keys=keys[order], **{n: a[order] for n, a in out.items()})
+
+
+# add cells to store; key already in store keeps existing row (real data beats placeholder)
+def add_missing(store: CellStore, extra: CellStore) -> CellStore:
+    new = store_take(extra, ~np.isin(extra.keys, store.keys))
+    if new.size == 0:
+        return store
+    keys = np.concatenate([store.keys, new.keys])
+    order = np.argsort(keys)
+    return CellStore(resolution=store.resolution,
+                     **{n: np.concatenate([getattr(store, n), getattr(new, n)])[order] for n in ARRAY_FIELDS})
 
 
 # streaming foveated map. feed scans in time order with pose; render rings around latest sensor.
@@ -213,17 +266,31 @@ class TemporalFoveatedMap:
     def n_cells(self) -> int:
         return sum(s.size for s in self.stores)
 
-    # push cells that left their ring outward into coarser store. last ring: drop (out of local map).
+    # centre distance of each store cell to sensor
+    def _dist(self, s: CellStore) -> np.ndarray:
+        return np.hypot(*(key_centers(s.keys, s.resolution) - self.sensor_xy).T) if s.size else np.empty(0)
+
+    # out: cells past ring edge (+ one coarse cell slack, stops split/merge flip-flop) merge into coarser store.
+    # last ring: drop (out of local map). in: coarse cells inside finer ring split into inherited children.
     def _handoff(self) -> None:
+        n = len(self.bands)
         for k, band in enumerate(self.bands):
             s = self.stores[k]
-            d = np.hypot(*(key_centers(s.keys, s.resolution) - self.sensor_xy).T) if s.size else np.empty(0)
-            leave = d >= band.r_max
+            slack = self.bands[k + 1].resolution if k + 1 < n else 0.0
+            leave = self._dist(s) >= band.r_max + slack
             if not leave.any():
                 continue
             self.stores[k] = store_take(s, ~leave)
-            if k + 1 < len(self.bands):
+            if k + 1 < n:
                 self.stores[k + 1] = merge_children(self.stores[k + 1], store_take(s, leave))
+        for k in range(n - 1, 0, -1) if self.params.seed_children else ():
+            s = self.stores[k]
+            enter = self._dist(s) < self.bands[k - 1].r_max
+            if not enter.any():
+                continue
+            self.stores[k] = store_take(s, ~enter)
+            kids = split_into_children(store_take(s, enter), self.bands[k - 1].resolution)
+            self.stores[k - 1] = add_missing(self.stores[k - 1], kids)
 
     # add one filtered velodyne scan taken at time t with pose T_world_velo
     def integrate(self, points_velo: np.ndarray, t_world_velo: np.ndarray, t: float) -> None:
@@ -235,13 +302,18 @@ class TemporalFoveatedMap:
         if len(points_velo) == 0:
             return
         world = velo_to_world(points_velo[:, :3], t_world_velo)
-        terrain = local_terrain(world, "world", self.params.terrain_cell, self.params.ground_percentile)
         r = np.hypot(points_velo[:, 0], points_velo[:, 1])
+        cx, cy = self.sensor_xy
+        # every point sits within r of sensor, so xy box is known: no min/max pass
+        r_out = self.bands[-1].r_max
+        terrain = local_terrain(world[r < r_out], "world", self.params.terrain_cell, self.params.ground_percentile,
+                                bounds=(cx - r_out, cx + r_out, cy - r_out, cy + r_out))
         for k, band in enumerate(self.bands):
             pts = world[(r >= band.r_min) & (r < band.r_max)]
             if len(pts) == 0:
                 continue
-            obs = scan_observation(pts, band.resolution, self.params.ground_percentile)
+            box = (cx - band.r_max, cx + band.r_max, cy - band.r_max, cy + band.r_max)
+            obs = scan_observation(pts, band.resolution, self.params.ground_percentile, bounds=box)
             tz = terrain.sample(key_centers(obs.keys, band.resolution))
             self.stores[k] = integrate_obs(self.stores[k], obs, tz, t, self.params)
 
@@ -273,7 +345,8 @@ class TemporalFoveatedMap:
                 band=band, spec=spec, flat_ids=flat_ids, count=count,
                 z_min=pick("z_min", np.nan), z_max=pick("z_max", np.nan), z_mean=pick("mean", np.nan),
                 z_var=z_var, ground=pick("ground", np.nan),
-                extra={"weight": weight, "logodds": pick("logodds", 0.0), "last_seen": pick("last_seen", np.nan)},
+                extra={"weight": weight, "logodds": pick("logodds", 0.0), "last_seen": pick("last_seen", np.nan),
+                       "inherited": pick("inherited", 0.0)},
             ))
         return FoveatedLayers(bands=out, frame="world", ground_percentile=self.params.ground_percentile,
                               center=(float(cx), float(cy)))

@@ -22,12 +22,21 @@ class Terrain:
         return out
 
 
-# percentile ground per big cell, then 3x3 min so cell under car borrows road from neighbours
-def local_terrain(points: np.ndarray, frame: str, cell: float, ground_percentile: float) -> Terrain:
+# percentile ground per big cell, then 3x3 min so cell under car borrows road from neighbours.
+# bounds = known xy box (x_min, x_max, y_min, y_max); else taken from points.
+def local_terrain(
+    points: np.ndarray,
+    frame: str,
+    cell: float,
+    ground_percentile: float,
+    bounds: tuple[float, float, float, float] | None = None,
+) -> Terrain:
     if len(points) == 0:
         raise ValueError("no points for terrain")
-    lo, hi = points[:, :2].min(axis=0), points[:, :2].max(axis=0)
-    spec = spec_from_bounds(lo[0], hi[0] + 1e-6, lo[1], hi[1] + 1e-6, cell, frame=frame)
+    if bounds is None:
+        lo, hi = points[:, :2].min(axis=0), points[:, :2].max(axis=0)
+        bounds = (lo[0], hi[0] + 1e-6, lo[1], hi[1] + 1e-6)
+    spec = spec_from_bounds(*bounds, cell, frame=frame)
     g = build_uniform_grid(points, spec, points_frame=frame, ground_percentile=ground_percentile).ground
     low = minimum_filter(np.where(np.isnan(g), np.inf, g), size=3, mode="constant", cval=np.inf)
     return Terrain(spec=spec, z=np.where(np.isinf(low), np.nan, low))

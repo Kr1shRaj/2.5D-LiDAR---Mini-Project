@@ -101,20 +101,31 @@ class GridLayers:
         return sum(a.nbytes for a in (self.count, self.z_min, self.z_max, self.z_mean, self.z_var, self.ground))
 
 
-# per cell percentile of z, linear interp like np.percentile.
-def _cell_percentile(flat: np.ndarray, z: np.ndarray, count: np.ndarray, percentile: float) -> np.ndarray:
-    order = np.lexsort((z, flat))
-    z_sorted = z[order]
-    starts = np.concatenate(([0], np.cumsum(count)[:-1]))
-    out = np.full(count.shape, np.nan)
-    hit = count > 0
-    pos = (percentile / 100.0) * (count[hit] - 1)
+# sort points by (cell, z) with one float argsort: key = cell * span + (z - z_lo), span > z range
+def _sort_by_cell_then_z(flat: np.ndarray, z: np.ndarray) -> np.ndarray:
+    if z.size == 0:
+        return np.empty(0, dtype=np.int64)
+    z_lo = z.min()
+    span = (z.max() - z_lo) + 1.0
+    return np.argsort(flat * span + (z - z_lo))
+
+
+# per cell min, max, percentile of z from z sorted inside each cell. percentile = linear like np.percentile.
+def _cell_order_stats(z_sorted: np.ndarray, count: np.ndarray, percentile: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    z_min = np.full(count.shape, np.nan)
+    z_max = np.full(count.shape, np.nan)
+    pct = np.full(count.shape, np.nan)
+    hit = np.flatnonzero(count)
+    n = count[hit]
+    base = np.cumsum(n) - n
+    z_min[hit] = z_sorted[base]
+    z_max[hit] = z_sorted[base + n - 1]
+    pos = (percentile / 100.0) * (n - 1)
     lo = np.floor(pos).astype(np.int64)
     hi = np.ceil(pos).astype(np.int64)
     frac = pos - lo
-    base = starts[hit]
-    out[hit] = z_sorted[base + lo] * (1.0 - frac) + z_sorted[base + hi] * frac
-    return out
+    pct[hit] = z_sorted[base + lo] * (1.0 - frac) + z_sorted[base + hi] * frac
+    return z_min, z_max, pct
 
 
 # bin points into uniform 2.5d grid. points must be in spec.frame. outside points dropped.
@@ -131,7 +142,8 @@ def build_uniform_grid(
     if points.ndim != 2 or points.shape[1] < 3:
         raise ValueError(f"points must be (N, 3+), got {points.shape}")
 
-    pts = points[np.all(np.isfinite(points[:, :3]), axis=1)]
+    # fast path: one sum tells if any nan / inf present
+    pts = points if np.isfinite(points[:, :3].sum()) else points[np.all(np.isfinite(points[:, :3]), axis=1)]
     ix, iy, valid = point_to_cell(pts[:, :2], spec)
     flat = ix[valid] * spec.ny + iy[valid]
     z = pts[valid, 2].astype(np.float64)
@@ -149,14 +161,8 @@ def build_uniform_grid(
     z_var = np.full(n_cells, np.nan)
     z_var[hit] = sq_dev[hit] / count[hit]
 
-    z_min = np.full(n_cells, np.inf)
-    np.minimum.at(z_min, flat, z)
-    z_max = np.full(n_cells, -np.inf)
-    np.maximum.at(z_max, flat, z)
-    z_min[~hit] = np.nan
-    z_max[~hit] = np.nan
-
-    ground = _cell_percentile(flat, z, count, ground_percentile)
+    z_sorted = z[_sort_by_cell_then_z(flat, z)]
+    z_min, z_max, ground = _cell_order_stats(z_sorted, count, ground_percentile)
 
     shape = spec.shape
     return GridLayers(

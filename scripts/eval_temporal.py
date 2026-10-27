@@ -29,14 +29,14 @@ PARAMS = FusionParams(
     l_hit=config.LOGODDS_HIT, l_miss=config.LOGODDS_MISS, l_min=config.LOGODDS_MIN, l_max=config.LOGODDS_MAX,
     terrain_cell=config.TERRAIN_CELL_M, ground_percentile=config.GROUND_PERCENTILE,
 )
-NAIVE = FusionParams(**{**PARAMS.__dict__, "clear_ghosts": False})
+NO_SEED = FusionParams(**{**PARAMS.__dict__, "seed_children": False})
 
 # name -> (bands, params, fused?). single = fresh map per scan, same code path.
 CONFIGS: dict[str, tuple[tuple[Band, ...], FusionParams, bool]] = {
     "single F-A": (config.FOVEATED_BANDS, PARAMS, False),
     "fused U-20": ((Band(0.0, R, 0.2),), PARAMS, True),
-    "fused F-A naive": (config.FOVEATED_BANDS, NAIVE, True),
-    "fused F-A": (config.FOVEATED_BANDS, PARAMS, True),
+    "fused F-A no seed": (config.FOVEATED_BANDS, NO_SEED, True),
+    "fused F-A seeded": (config.FOVEATED_BANDS, PARAMS, True),
 }
 
 
@@ -49,18 +49,19 @@ def ring_of(xy: np.ndarray, sensor: np.ndarray) -> np.ndarray:
     return out
 
 
-# per ring: share of reference ground cells map also observes + ground error
-def coverage(fov: FoveatedLayers, ref: GridLayers, sensor: np.ndarray) -> list[tuple[int, int, np.ndarray]]:
+# per ring: reference ground cells, how many map observes, how many with own (not inherited) data, ground error
+def coverage(fov: FoveatedLayers, ref: GridLayers, sensor: np.ndarray) -> list[tuple[int, int, int, np.ndarray]]:
     centers = cell_centers(ref.spec)
     near = ref.observed & (np.hypot(centers[..., 0] - sensor[0], centers[..., 1] - sensor[1]) < R)
     xy, g_ref = centers[near], ref.ground[near]
     g_map = fov.sample(xy, "ground")
+    native = fov.sample(xy, "inherited") == 0.0
     ring = ring_of(xy, sensor)
     out = []
     for k in range(len(EVAL_RINGS)):
         s = ring == k
         hit = s & np.isfinite(g_map)
-        out.append((int(s.sum()), int(hit.sum()), np.abs(g_map[hit] - g_ref[hit])))
+        out.append((int(s.sum()), int(hit.sum()), int((hit & native).sum()), np.abs(g_map[hit] - g_ref[hit])))
     return out
 
 
@@ -146,7 +147,7 @@ def main() -> None:
     for name, (bands, params, fused) in CONFIGS.items():
         m = TemporalFoveatedMap(bands, params)
         ms, mem_store, mem_render, cells = [], [], [], []
-        acc = {"cov": [[0, 0, []] for _ in EVAL_RINGS], "curb": {d: [] for d in PROBE_D},
+        acc = {"cov": [[0, 0, 0, []] for _ in EVAL_RINGS], "curb": {d: [] for d in PROBE_D},
                "ghost": [0, 0, 0], "obst": [0, 0, 0]}
         for i in range(len(scans)):
             if not fused:
@@ -161,17 +162,18 @@ def main() -> None:
             if i not in eval_ids:
                 continue
             sensor = poses[i][:2, 3]
-            for k, (n, h, err) in enumerate(coverage(fov, ref, sensor)):
+            for k, (n, h, nat, err) in enumerate(coverage(fov, ref, sensor)):
                 acc["cov"][k][0] += n
                 acc["cov"][k][1] += h
-                acc["cov"][k][2].append(err)
+                acc["cov"][k][2] += nat
+                acc["cov"][k][3].append(err)
             for d in PROBE_D:
                 acc["curb"][d].append(curbs(fov, ref, *edges[d], d, sensor))
             for j, v in enumerate(ghosts(fov, world_scans[i])):
                 acc["ghost"][j] += v
             for j, v in enumerate(obstacles(fov, ref, world_scans[i])):
                 acc["obst"][j] += v
-            if name == "fused F-A" and i == eval_ids[-1]:
+            if name == "fused F-A seeded" and i == eval_ids[-1]:
                 plot_foveated(fov, args.out / f"seq00_scan{ids[i]:03d}_fused_FA.png",
                               title=f"Fused F-A  |  seq 00 scan {ids[i]}  |  {fov.nbytes / 1e6:.2f} MB rendered")
         res[name] = {"ms": np.array(ms[1:]), "store": np.array(mem_store), "render": np.array(mem_render),
@@ -185,12 +187,13 @@ def main() -> None:
     rows = []
     for n, r in res.items():
         for k, (lo_, hi_) in enumerate(EVAL_RINGS):
-            tot, hit, errs = r["cov"][k]
+            tot, hit, nat, errs = r["cov"][k]
             e = np.concatenate(errs)
-            rows.append([n, f"{lo_:g}-{hi_:g} m", f"{hit / max(tot, 1) * 100:.0f}%",
+            rows.append([n, f"{lo_:g}-{hi_:g} m", f"{hit / max(tot, 1) * 100:.0f}%", f"{nat / max(tot, 1) * 100:.0f}%",
                          f"{np.median(e):.3f}" if e.size else "-", f"{np.percentile(e, 95):.3f}" if e.size else "-"])
-    print("GROUND COVERAGE + ERROR vs reference (cover = share of observed 0.1 m reference cells map also observes)")
-    table(["config", "ring", "cover", "ground err med", "ground err p95"], rows)
+    print("GROUND COVERAGE + ERROR vs reference (cover = share of observed 0.1 m reference cells map also observes;")
+    print("own = cover with cell's own data, not inherited placeholder)")
+    table(["config", "ring", "cover", "own", "ground err med", "ground err p95"], rows)
 
     for d in PROBE_D:
         rows = []
