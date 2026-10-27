@@ -1,0 +1,48 @@
+from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.figure import Figure
+
+from src.mapping.uniform_grid import GridLayers
+
+UNOBSERVED_COLOR = "#bdbdbd"
+
+
+# draw one layer top down. x right, y up. nan cells = grey unobserved.
+def _draw_layer(ax: plt.Axes, layer: np.ndarray, layers: GridLayers, title: str, cmap: str, label: str) -> None:
+    spec = layers.spec
+    cm = plt.get_cmap(cmap).copy()
+    cm.set_bad(UNOBSERVED_COLOR)
+    # layer is [ix, iy]; imshow wants [row=y, col=x], so transpose and put origin low
+    img = ax.imshow(
+        np.ma.masked_invalid(layer.T),
+        origin="lower",
+        extent=(spec.x_min, spec.x_max, spec.y_min, spec.y_max),
+        cmap=cm,
+        interpolation="nearest",
+    )
+    ax.set_title(title)
+    ax.set_xlabel(f"x [m] ({spec.frame})")
+    ax.set_ylabel(f"y [m] ({spec.frame})")
+    ax.set_aspect("equal")
+    ax.figure.colorbar(img, ax=ax, label=label, shrink=0.8)
+
+
+# top down elevation + roughness panels. save png if path given.
+def plot_elevation_and_roughness(layers: GridLayers, out_path: str | Path | None = None) -> Figure:
+    fig, (ax_elev, ax_rough) = plt.subplots(1, 2, figsize=(13, 5.5), constrained_layout=True)
+    _draw_layer(ax_elev, layers.z_max, layers, "Max elevation", "viridis", "z max [m]")
+    _draw_layer(ax_rough, layers.roughness, layers, "Roughness (z std)", "magma", "z std [m]")
+    observed = int(layers.observed.sum())
+    total = layers.count.size
+    fig.suptitle(
+        f"Uniform 2.5D grid  |  {layers.spec.resolution:.2f} m cells  |  "
+        f"observed {observed}/{total}  |  grey = unobserved"
+    )
+    if out_path is not None:
+        fig.savefig(out_path, dpi=120)
+    return fig
