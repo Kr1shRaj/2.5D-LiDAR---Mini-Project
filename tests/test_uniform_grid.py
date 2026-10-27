@@ -210,3 +210,12 @@ def test_viz_writes_png(spec: GridSpec, scene: np.ndarray, tmp_path) -> None:
     fig = plot_elevation_and_roughness(layers, out)
     assert out.stat().st_size > 0
     assert len(fig.axes) >= 2
+
+
+def test_sample_layer_reads_cells_and_nan_outside(spec: GridSpec, scene: np.ndarray) -> None:
+    from src.mapping.uniform_grid import sample_layer
+
+    layers = build_uniform_grid(scene, spec, points_frame="velo", ground_percentile=10.0)
+    got = sample_layer(layers, np.array([[1.25, -0.75], [0.1, 0.1], [-3.75, 3.25], [50.0, 0.0]]), "z_max")
+    assert got[:2] == pytest.approx([BOX_TOP_Z, GROUND_Z])
+    assert np.isnan(got[2]) and np.isnan(got[3])  # hole + outside grid

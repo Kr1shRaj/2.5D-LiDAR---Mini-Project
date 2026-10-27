@@ -169,3 +169,11 @@ def build_uniform_grid(
         ground=ground.reshape(shape),
         ground_percentile=ground_percentile,
     )
+
+
+# read one layer at query xy. NaN where outside grid or unobserved.
+def sample_layer(layers: GridLayers, xy: np.ndarray, name: str) -> np.ndarray:
+    ix, iy, valid = point_to_cell(xy, layers.spec)
+    out = np.full(len(xy), np.nan)
+    out[valid] = getattr(layers, name)[ix[valid], iy[valid]]
+    return out

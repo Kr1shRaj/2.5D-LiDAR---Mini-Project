@@ -25,6 +25,7 @@ python scripts/fetch_kitti_slice.py --seq 00 --count 100   # ~190 MB, range-read
 python -m scripts.check_ground                              # near-field ground stats + top-down PNG in outputs/
 python -m scripts.build_reference_map                      # dense world-frame reference map + alignment stats
 python -m scripts.eval_foveated                            # phase 2: uniform vs foveated memory, latency, error per ring
+python -m scripts.eval_preservation                        # phase 2: curb / step / obstacle preservation per ring
 ```
 
 KITTI data is CC BY-NC-SA 3.0. Stays in `data/` (git ignored).
