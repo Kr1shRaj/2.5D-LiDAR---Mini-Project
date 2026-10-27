@@ -14,6 +14,7 @@ pytest
 - `src/io/` — KITTI / SemanticKITTI loader (`.bin`, `.label`, `calib.txt`, `poses.txt`)
 - `src/preprocess/` — range gate, ego box strip, frame transforms
 - `src/mapping/` — uniform 2.5D grid (Phase 1)
+- `src/temporal/` — world-frame scan accumulation (offline reference map)
 - `src/viz/` — top-down elevation + roughness plots
 - `tests/` — synthetic tests
 
@@ -22,6 +23,7 @@ pytest
 ```bash
 python scripts/fetch_kitti_slice.py --seq 00 --count 100   # ~190 MB, range-read from KITTI zip
 python -m scripts.check_ground                              # near-field ground stats + top-down PNG in outputs/
+python -m scripts.build_reference_map                      # dense world-frame reference map + alignment stats
 ```
 
 KITTI data is CC BY-NC-SA 3.0. Stays in `data/` (git ignored).

@@ -20,6 +20,7 @@ def _draw_layer(
     title: str,
     cmap: str,
     label: str,
+    vmin: float | None = None,
     vmax: float | None = None,
 ) -> None:
     spec = layers.spec
@@ -32,6 +33,7 @@ def _draw_layer(
         extent=(spec.x_min, spec.x_max, spec.y_min, spec.y_max),
         cmap=cm,
         interpolation="nearest",
+        vmin=vmin,
         vmax=vmax,
     )
     ax.set_title(title)
@@ -41,14 +43,24 @@ def _draw_layer(
     ax.figure.colorbar(img, ax=ax, label=label, shrink=0.8)
 
 
-# top down elevation + roughness panels. save png if path given.
-def plot_elevation_and_roughness(layers: GridLayers, out_path: str | Path | None = None) -> Figure:
+# top down elevation + roughness panels. optional sensor path in grid frame. save png if path given.
+def plot_elevation_and_roughness(
+    layers: GridLayers,
+    out_path: str | Path | None = None,
+    path_xy: np.ndarray | None = None,
+) -> Figure:
     fig, (ax_elev, ax_rough) = plt.subplots(1, 2, figsize=(13, 5.5), constrained_layout=True)
-    _draw_layer(ax_elev, layers.z_max, layers, "Max elevation", "viridis", "z max [m]")
+    # clip colour at p1..p99 so stray multipath points do not stretch scale
+    lo, hi = (np.nanpercentile(layers.z_max, [1, 99]) if layers.observed.any() else (None, None))
+    _draw_layer(ax_elev, layers.z_max, layers, "Max elevation (clip p1..p99)", "viridis", "z max [m]", vmin=lo, vmax=hi)
     # clip colour at p95 so few tall poles do not wash out curbs
     rough = layers.roughness
     rough_vmax = float(np.nanpercentile(rough, 95)) if layers.observed.any() else None
     _draw_layer(ax_rough, rough, layers, "Roughness (z std, clip p95)", "magma", "z std [m]", vmax=rough_vmax)
+    if path_xy is not None:
+        for ax in (ax_elev, ax_rough):
+            ax.plot(path_xy[:, 0], path_xy[:, 1], color="red", lw=1.2, label="sensor path")
+        ax_elev.legend(loc="upper left", fontsize=8)
     observed = int(layers.observed.sum())
     total = layers.count.size
     fig.suptitle(

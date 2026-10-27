@@ -46,6 +46,20 @@ def centered_spec(extent: float, resolution: float, frame: str, cx: float = 0.0,
     return GridSpec(x_min=cx - half, y_min=cy - half, resolution=resolution, nx=n, ny=n, frame=frame)
 
 
+# smallest grid snapped to whole cells that covers box [x_min, x_max] x [y_min, y_max]
+def spec_from_bounds(x_min: float, x_max: float, y_min: float, y_max: float, resolution: float, frame: str) -> GridSpec:
+    if not (x_min < x_max and y_min < y_max):
+        raise ValueError(f"bad bounds x[{x_min}, {x_max}] y[{y_min}, {y_max}]")
+    x0 = np.floor(x_min / resolution) * resolution
+    y0 = np.floor(y_min / resolution) * resolution
+    # float division can round up one cell. step back so min point stays inside.
+    x0 = x0 - resolution if x0 > x_min else x0
+    y0 = y0 - resolution if y0 > y_min else y0
+    nx = int(np.floor((x_max - x0) / resolution)) + 1
+    ny = int(np.floor((y_max - y0) / resolution)) + 1
+    return GridSpec(x_min=float(x0), y_min=float(y0), resolution=resolution, nx=nx, ny=ny, frame=frame)
+
+
 # turn lidar xy into grid cell index. valid = point lands inside grid.
 def point_to_cell(xy: np.ndarray, spec: GridSpec) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ix = np.floor((xy[:, 0] - spec.x_min) / spec.resolution).astype(np.int64)
