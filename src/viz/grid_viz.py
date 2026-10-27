@@ -96,11 +96,12 @@ def plot_foveated(fov: FoveatedLayers, out_path: str | Path | None = None, title
         band_id = np.where(inside, float(k), np.nan)
         ax_res.imshow(np.ma.masked_invalid(band_id.T), origin="lower", extent=ext, cmap=res_cm,
                       interpolation="nearest", vmin=-0.5, vmax=len(fov.bands) - 0.5)
+    cx, cy = fov.center
     for ax in (ax_elev, ax_res):
         for bl in fov.bands:
-            ax.add_patch(plt.Circle((0, 0), bl.band.r_max, fill=False, color="red", lw=0.8))
-        ax.set_xlim(-r_out, r_out)
-        ax.set_ylim(-r_out, r_out)
+            ax.add_patch(plt.Circle((cx, cy), bl.band.r_max, fill=False, color="red", lw=0.8))
+        ax.set_xlim(cx - r_out, cx + r_out)
+        ax.set_ylim(cy - r_out, cy + r_out)
         ax.set_aspect("equal")
         ax.set_xlabel(f"x [m] ({fov.frame})")
         ax.set_ylabel(f"y [m] ({fov.frame})")

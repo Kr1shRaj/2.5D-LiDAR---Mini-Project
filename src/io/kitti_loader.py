@@ -46,3 +46,8 @@ def load_poses(path: str | Path) -> np.ndarray:
     poses = np.tile(np.eye(4), (rows.shape[0], 1, 1))
     poses[:, :3, :4] = rows.reshape(-1, 3, 4)
     return poses
+
+
+# read times.txt: one timestamp per scan, seconds since sequence start
+def load_times(path: str | Path) -> np.ndarray:
+    return np.loadtxt(path, dtype=np.float64, ndmin=1)

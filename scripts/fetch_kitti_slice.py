@@ -53,7 +53,7 @@ def extract_members(url: str, wanted: list[str], out_dir: Path) -> None:
             target.write_bytes(zf.read(name))
 
 
-# fetch first n velodyne scans + calib + poses for one kitti odometry sequence
+# fetch first n velodyne scans + calib + times + poses for one kitti odometry sequence
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seq", default="00")
@@ -68,10 +68,10 @@ def main() -> None:
 
     scans = [f"dataset/sequences/{args.seq}/velodyne/{i:06d}.bin" for i in range(args.start, args.start + args.count)]
     extract_members(f"{KITTI_BASE}/data_odometry_velodyne.zip", scans, velo_dir)
-    extract_members(f"{KITTI_BASE}/data_odometry_calib.zip", [f"dataset/sequences/{args.seq}/calib.txt"], seq_dir)
+    extract_members(f"{KITTI_BASE}/data_odometry_calib.zip", [f"dataset/sequences/{args.seq}/calib.txt", f"dataset/sequences/{args.seq}/times.txt"], seq_dir)
     extract_members(f"{KITTI_BASE}/data_odometry_poses.zip", [f"dataset/poses/{args.seq}.txt"], seq_dir)
     (seq_dir / f"{args.seq}.txt").rename(seq_dir / "poses.txt")
-    print(f"GOT {args.count} SCANS + CALIB + POSES -> {seq_dir}")
+    print(f"GOT {args.count} SCANS + CALIB + TIMES + POSES -> {seq_dir}")
 
 
 if __name__ == "__main__":
