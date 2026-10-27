@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.figure import Figure
 
+from src.mapping.foveated_grid import FoveatedLayers
 from src.mapping.uniform_grid import GridLayers
 
 UNOBSERVED_COLOR = "#bdbdbd"
@@ -67,6 +68,49 @@ def plot_elevation_and_roughness(
         f"Uniform 2.5D grid  |  {layers.spec.resolution:.2f} m cells  |  "
         f"observed {observed}/{total}  |  grey = unobserved"
     )
+    if out_path is not None:
+        fig.savefig(out_path, dpi=120)
+    return fig
+
+
+# top down foveated map: z max per band (far drawn first) + cell size map. rings mark band edges.
+def plot_foveated(fov: FoveatedLayers, out_path: str | Path | None = None, title: str = "") -> Figure:
+    fig, (ax_elev, ax_res) = plt.subplots(1, 2, figsize=(13, 5.5), constrained_layout=True)
+    all_zmax = np.concatenate([b.z_max for b in fov.bands])
+    lo, hi = np.nanpercentile(all_zmax, [1, 99]) if np.isfinite(all_zmax).any() else (None, None)
+    elev_cm = plt.get_cmap("viridis").copy()
+    elev_cm.set_bad((0, 0, 0, 0))
+    res_cm = plt.get_cmap("cividis", len(fov.bands))
+    r_out = fov.bands[-1].band.r_max
+    ax_elev.set_facecolor(UNOBSERVED_COLOR)
+    ax_res.set_facecolor("white")
+    img = None
+    for k, bl in reversed(list(enumerate(fov.bands))):
+        s = bl.spec
+        ext = (s.x_min, s.x_max, s.y_min, s.y_max)
+        # mask cells outside annulus so inner band shows through
+        inside = np.isfinite(bl.dense("count"))
+        zmax = np.where(inside, bl.dense("z_max"), np.nan)
+        img = ax_elev.imshow(np.ma.masked_invalid(zmax.T), origin="lower", extent=ext, cmap=elev_cm,
+                             interpolation="nearest", vmin=lo, vmax=hi)
+        band_id = np.where(inside, float(k), np.nan)
+        ax_res.imshow(np.ma.masked_invalid(band_id.T), origin="lower", extent=ext, cmap=res_cm,
+                      interpolation="nearest", vmin=-0.5, vmax=len(fov.bands) - 0.5)
+    for ax in (ax_elev, ax_res):
+        for bl in fov.bands:
+            ax.add_patch(plt.Circle((0, 0), bl.band.r_max, fill=False, color="red", lw=0.8))
+        ax.set_xlim(-r_out, r_out)
+        ax.set_ylim(-r_out, r_out)
+        ax.set_aspect("equal")
+        ax.set_xlabel(f"x [m] ({fov.frame})")
+        ax.set_ylabel(f"y [m] ({fov.frame})")
+    fig.colorbar(img, ax=ax_elev, label="z max [m]", shrink=0.8)
+    ax_elev.set_title("Max elevation per band (grey = unobserved)")
+    handles = [plt.Rectangle((0, 0), 1, 1, color=res_cm(k)) for k in range(len(fov.bands))]
+    labels = [f"{b.band.r_min:g}-{b.band.r_max:g} m @ {b.band.resolution * 100:g} cm" for b in fov.bands]
+    ax_res.legend(handles, labels, loc="upper left", fontsize=8)
+    ax_res.set_title("Cell size by band")
+    fig.suptitle(title or f"Foveated 2.5D grid  |  {fov.n_cells} cells  |  {fov.nbytes / 1e6:.2f} MB")
     if out_path is not None:
         fig.savefig(out_path, dpi=120)
     return fig
