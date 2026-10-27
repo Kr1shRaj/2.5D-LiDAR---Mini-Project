@@ -13,13 +13,13 @@ def range_gate_mask(points_velo: np.ndarray, r_min: float, r_max: float) -> np.n
     return (r >= r_min) & (r < r_max)
 
 
-# keep mask: drop points inside ego car box (x_min, x_max, y_min, y_max). sensor frame only.
-def ego_vehicle_mask(points_velo: np.ndarray, ego_box: tuple[float, float, float, float]) -> np.ndarray:
-    x_min, x_max, y_min, y_max = ego_box
-    if not (x_min < x_max and y_min < y_max):
+# keep mask: drop points inside ego car box (x_min, x_max, y_min, y_max, z_min, z_max). sensor frame only.
+def ego_vehicle_mask(points_velo: np.ndarray, ego_box: tuple[float, float, float, float, float, float]) -> np.ndarray:
+    x_min, x_max, y_min, y_max, z_min, z_max = ego_box
+    if not (x_min < x_max and y_min < y_max and z_min < z_max):
         raise ValueError(f"bad ego box {ego_box}")
-    x, y = points_velo[:, 0], points_velo[:, 1]
-    inside = (x >= x_min) & (x <= x_max) & (y >= y_min) & (y <= y_max)
+    x, y, z = points_velo[:, 0], points_velo[:, 1], points_velo[:, 2]
+    inside = (x >= x_min) & (x <= x_max) & (y >= y_min) & (y <= y_max) & (z >= z_min) & (z <= z_max)
     return ~inside
 
 
@@ -28,7 +28,7 @@ def preprocess_mask(
     points_velo: np.ndarray,
     r_min: float,
     r_max: float,
-    ego_box: tuple[float, float, float, float],
+    ego_box: tuple[float, float, float, float, float, float],
 ) -> np.ndarray:
     keep = finite_mask(points_velo)
     keep &= range_gate_mask(points_velo, r_min, r_max)

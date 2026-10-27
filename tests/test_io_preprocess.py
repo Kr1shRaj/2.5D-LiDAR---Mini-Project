@@ -75,5 +75,12 @@ def test_range_gate_and_ego_box() -> None:
         ]
     )
     assert range_gate_mask(pts[:3], 2.0, 50.0).tolist() == [False, True, False]
-    assert ego_vehicle_mask(pts[:3], (-2.0, 2.0, -1.0, 1.0)).tolist() == [False, True, True]
-    assert preprocess_mask(pts, 2.0, 50.0, (-2.0, 2.0, -1.0, 1.0)).tolist() == [False, True, False, False]
+    box = (-2.0, 2.0, -1.0, 1.0, -1.8, 0.0)
+    assert ego_vehicle_mask(pts[:3], box).tolist() == [False, True, True]
+    assert preprocess_mask(pts, 2.0, 50.0, box).tolist() == [False, True, False, False]
+
+
+def test_ego_box_respects_z() -> None:
+    box = (-1.2, 1.6, -0.9, 0.9, -1.8, 0.0)
+    pts = np.array([[0.5, 0.0, -1.0], [0.5, 0.0, 0.5], [0.5, 0.0, -2.0]])  # body, above roof, below road
+    assert ego_vehicle_mask(pts, box).tolist() == [False, True, True]
