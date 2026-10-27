@@ -219,3 +219,18 @@ def test_sample_layer_reads_cells_and_nan_outside(spec: GridSpec, scene: np.ndar
     got = sample_layer(layers, np.array([[1.25, -0.75], [0.1, 0.1], [-3.75, 3.25], [50.0, 0.0]]), "z_max")
     assert got[:2] == pytest.approx([BOX_TOP_Z, GROUND_Z])
     assert np.isnan(got[2]) and np.isnan(got[3])  # hole + outside grid
+
+
+def test_sparse_stats_match_dense(spec: GridSpec) -> None:
+    from src.mapping.uniform_grid import cell_stats_sparse, point_to_cell
+
+    rng = np.random.default_rng(seed=5)
+    pts = np.column_stack([rng.uniform(-5, 5, 3000), rng.uniform(-5, 5, 3000), rng.normal(GROUND_Z, 0.2, 3000)])
+    dense = build_uniform_grid(pts, spec, points_frame="velo", ground_percentile=10.0)
+    ix, iy, _ = point_to_cell(pts[:, :2], spec)
+    ids, n, mean, var, zmin, zmax, pct = cell_stats_sparse(ix * spec.ny + iy, pts[:, 2], 10.0)
+    dix, diy = np.divmod(ids, spec.ny)
+    assert np.array_equal(np.flatnonzero(dense.observed.ravel()), ids)
+    assert np.array_equal(dense.count[dix, diy], n)
+    for got, want in ((mean, dense.z_mean), (var, dense.z_var), (zmin, dense.z_min), (zmax, dense.z_max), (pct, dense.ground)):
+        assert np.allclose(got, want[dix, diy])

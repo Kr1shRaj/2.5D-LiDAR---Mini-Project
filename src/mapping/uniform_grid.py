@@ -183,3 +183,24 @@ def sample_layer(layers: GridLayers, xy: np.ndarray, name: str) -> np.ndarray:
     out = np.full(len(xy), np.nan)
     out[valid] = getattr(layers, name)[ix[valid], iy[valid]]
     return out
+
+
+# sparse per-cell stats, only cells with points, one sort, no dense arrays.
+# returns sorted unique flat ids, count, mean, var, min, max, percentile (linear like np.percentile).
+def cell_stats_sparse(flat: np.ndarray, z: np.ndarray, percentile: float) -> tuple[np.ndarray, ...]:
+    if z.size == 0:
+        e = np.empty(0)
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64), e, e, e, e, e
+    order = _sort_by_cell_then_z(flat, z)
+    f, zs = flat[order], z[order]
+    starts = np.flatnonzero(np.concatenate(([True], f[1:] != f[:-1])))
+    n = np.diff(np.concatenate((starts, [f.size])))
+    mean = np.add.reduceat(zs, starts) / n
+    dev = zs - np.repeat(mean, n)
+    var = np.add.reduceat(dev * dev, starts) / n
+    pos = (percentile / 100.0) * (n - 1)
+    lo = np.floor(pos).astype(np.int64)
+    hi = np.ceil(pos).astype(np.int64)
+    frac = pos - lo
+    pct = zs[starts + lo] * (1.0 - frac) + zs[starts + hi] * frac
+    return f[starts], n, mean, var, zs[starts], zs[starts + n - 1], pct

@@ -3,7 +3,7 @@ from dataclasses import dataclass, fields, replace
 import numpy as np
 
 from src.mapping.foveated_grid import Band, BandLayers, FoveatedLayers, annulus_mask, validate_bands
-from src.mapping.uniform_grid import build_uniform_grid, spec_from_bounds
+from src.mapping.uniform_grid import cell_stats_sparse, point_to_cell, spec_from_bounds
 from src.preprocess.transforms import velo_to_world
 from src.temporal.terrain import Terrain, local_terrain
 
@@ -131,13 +131,14 @@ def scan_observation(
         lo, hi = points_world[:, :2].min(axis=0), points_world[:, :2].max(axis=0)
         bounds = (lo[0], hi[0] + 1e-9, lo[1], hi[1] + 1e-9)
     spec = spec_from_bounds(*bounds, resolution, frame="world")
-    g = build_uniform_grid(points_world, spec, points_frame="world", ground_percentile=ground_percentile)
-    ix, iy = np.nonzero(g.observed)
-    keys = encode_keys(ix + int(round(spec.x_min / resolution)), iy + int(round(spec.y_min / resolution)))
-    order = np.argsort(keys)
-    ix, iy = ix[order], iy[order]
-    return ScanObs(keys=keys[order], n=g.count[ix, iy], mean=g.z_mean[ix, iy], var=g.z_var[ix, iy],
-                   z_min=g.z_min[ix, iy], z_max=g.z_max[ix, iy], ground=g.ground[ix, iy])
+    ix, iy, valid = point_to_cell(points_world[:, :2], spec)
+    flat = ix[valid] * spec.ny + iy[valid]
+    ids, n, mean, var, z_min, z_max, ground = cell_stats_sparse(flat, points_world[valid, 2].astype(np.float64),
+                                                                 ground_percentile)
+    # flat ids sorted ix-major -> world keys come out sorted too
+    lix, liy = np.divmod(ids, spec.ny)
+    keys = encode_keys(lix + int(round(spec.x_min / resolution)), liy + int(round(spec.y_min / resolution)))
+    return ScanObs(keys=keys, n=n, mean=mean, var=var, z_min=z_min, z_max=z_max, ground=ground)
 
 
 # fold one scan observation (weight 1 per cell) into store. terrain_z = local terrain under each obs cell.

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import confusion_matrix, f1_score, precision_recall_fscore_support
 
 from src import config
@@ -117,21 +117,21 @@ def build_rows(seq_dir: Path, rng: np.random.Generator, keep_last_map: bool = Fa
     return out
 
 
-# small fast trees: 15 rounds x 15 leaves, depth 6, lr 0.25. picked on seq 00 hold-out (time blocks):
-# same F1 as 40 / 300 rounds, 3x / 20x faster predict. see outputs/phase5_model_speed.txt
-GBT_PARAMS = {"max_iter": 15, "max_leaf_nodes": 15, "max_depth": 6, "learning_rate": 0.25}
+# small random forest: 8 trees, depth 12, single thread. picked on seq 00 hold-out (time blocks):
+# F1 0.528 vs 0.532 for gradient boosted trees, but no thread wake-up cost per tree -> real-time labeler fits.
+# see outputs/phase5_model_speed.txt
+RF_PARAMS = {"n_estimators": 8, "max_depth": 12, "min_samples_leaf": 50, "n_jobs": 1}
 
 
-# fit 4-class gradient boosted trees on map-observed rows
-def fit_model(rows: dict) -> HistGradientBoostingClassifier:
+# fit 4-class random forest on map-observed rows. NaN features handled natively.
+def fit_model(rows: dict) -> RandomForestClassifier:
     obs = rows["map_obs"]
-    model = HistGradientBoostingClassifier(**GBT_PARAMS, class_weight="balanced", early_stopping=False,
-                                           random_state=SEED)
+    model = RandomForestClassifier(**RF_PARAMS, class_weight="balanced", random_state=SEED)
     return model.fit(rows["X"][obs], rows["y"][obs])
 
 
 # model output: unknown where map saw nothing, classifier elsewhere
-def predict(model: HistGradientBoostingClassifier, X: np.ndarray, map_obs: np.ndarray) -> np.ndarray:
+def predict(model: RandomForestClassifier, X: np.ndarray, map_obs: np.ndarray) -> np.ndarray:
     out = np.full(len(X), UNKNOWN, dtype=np.int64)
     if map_obs.any():
         out[map_obs] = model.predict(X[map_obs])
@@ -183,7 +183,7 @@ def main() -> None:
     print()
 
     model = fit_model(train)
-    joblib.dump({"model": model, "features": FEATURES, "classes": CLASS_NAMES}, args.out / "hazard_hgb.joblib")
+    joblib.dump({"model": model, "features": FEATURES, "classes": CLASS_NAMES}, args.out / "hazard_rf.joblib")
 
     p_train = predict(model, train["X"], train["map_obs"])
     print(f"TRAIN (seq {args.train.name}) model macro F1 {f1_score(train['y'], p_train, labels=LABELS, average='macro'):.3f}"
@@ -192,7 +192,7 @@ def main() -> None:
     p_test = predict(model, test["X"], test["map_obs"])
     print(f"=== TEST seq {args.test.name} (never seen in training) ===")
     print()
-    report("MODEL (gradient boosted trees on fused F-A map features)", test["y"], p_test)
+    report("MODEL (random forest on fused F-A map features)", test["y"], p_test)
     report("RULE BASELINE (same thresholds applied straight to fused map)", test["y"], test["rule"])
     confusion("MODEL", test["y"], p_test)
     confusion("RULE BASELINE", test["y"], test["rule"])

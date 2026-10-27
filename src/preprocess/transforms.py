@@ -29,9 +29,11 @@ def velo_poses_from_cam_poses(cam_poses: np.ndarray, tr_cam_velo: np.ndarray) ->
 def apply_transform(points: np.ndarray, t_dst_src: np.ndarray) -> np.ndarray:
     if t_dst_src.shape != (4, 4):
         raise ValueError(f"transform must be (4, 4), got {t_dst_src.shape}")
-    out = np.array(points, dtype=np.float64, copy=True)
-    out[:, :3] = points[:, :3] @ t_dst_src[:3, :3].T + t_dst_src[:3, 3]
-    return out
+    xyz = points[:, :3] @ t_dst_src[:3, :3].T + t_dst_src[:3, 3]
+    if points.shape[1] == 3:
+        return xyz.astype(np.float64, copy=False)
+    # extra columns ride along unchanged
+    return np.column_stack([xyz, points[:, 3:]]).astype(np.float64, copy=False)
 
 
 # p_world = T_world_velo_i @ p_velo_i  (velodyne scan i -> world = velo_0)
