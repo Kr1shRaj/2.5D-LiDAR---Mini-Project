@@ -30,6 +30,9 @@ python -m scripts.eval_preservation                        # phase 2: curb / ste
 python -m scripts.eval_temporal                            # phase 3: streaming fusion vs single scan: coverage, curbs, ghosts, cost
 python scripts/fetch_kitti_slice.py --seq 08 --start 1500 --count 100   # test slice (seq 08 frames 0-99 have broken GT poses)
 python -m scripts.train_hazard                             # phase 4: hazard classifier, train seq 00, test seq 08
+python scripts/fetch_kitti_slice.py --seq 00 --start 0 --count 300 --out data/kitti_long
+python scripts/fetch_kitti_slice.py --seq 08 --start 1500 --count 300 --out data/kitti_long
+python -m scripts.benchmark                                # phase 5: uniform vs foveated vs foveated + model (train 00, test 08)
 ```
 
 KITTI data is CC BY-NC-SA 3.0. Stays in `data/` (git ignored).

@@ -69,12 +69,33 @@ def window_centers(ref: GridLayers, sensor: np.ndarray) -> tuple[np.ndarray, np.
     return xy[keep], ref.count[ii[keep], jj[keep]]
 
 
+# hazard rows at one scan: sample spots near sensor, features from online map, targets from reference
+def sample_spots(fov, ref: GridLayers, ref_terrain: Terrain, scan_world: np.ndarray, sensor: np.ndarray, t: float,
+                 rng: np.random.Generator) -> dict[str, np.ndarray]:
+    xy, ref_count = window_centers(ref, sensor)
+    map_count = np.nan_to_num(fov.sample(xy, "count"))
+    cand = np.flatnonzero((ref_count > 0) | (map_count > 0))  # spots nobody ever saw: skip, trivial
+    pick = rng.choice(cand, size=min(CELLS_PER_SCAN, cand.size), replace=False)
+    xy = xy[pick]
+    scan_terrain = local_terrain(scan_world, "world", config.TERRAIN_CELL_M, config.GROUND_PERCENTILE)
+    f_map = cell_features(fov.sample_many, xy, scan_terrain.sample(xy), sensor, t)
+    f_ref = cell_features(grid_sampler(ref), xy, ref_terrain.sample(xy), sensor, t)
+    return {
+        "X": feature_matrix(f_map),
+        "y": geometric_classes(f_ref, ref_count[pick] >= config.REF_MIN_POINTS, TH),
+        "rule": geometric_classes(f_map, map_count[pick] > 0, TH),
+        "map_obs": map_count[pick] > 0,
+        "range": f_map["range"],
+    }
+
+
 # stream slice through fused map; sample spots; features from online map, targets from reference
-def build_rows(seq_dir: Path, rng: np.random.Generator, keep_last_map: bool = False) -> dict:
+def build_rows(seq_dir: Path, rng: np.random.Generator, keep_last_map: bool = False,
+               bands: tuple = config.FOVEATED_BANDS) -> dict:
     scans, poses, times = load_sequence(seq_dir)
     ref, ref_terrain = build_reference(scans, poses)
-    m = TemporalFoveatedMap(config.FOVEATED_BANDS, PARAMS)
-    rows = {k: [] for k in ("X", "y", "rule", "map_obs", "range", "scan")}
+    m = TemporalFoveatedMap(bands, PARAMS)
+    rows: dict[str, list] = {k: [] for k in ("X", "y", "rule", "map_obs", "range", "scan")}
     last = None
     for i, (scan, pose, t) in enumerate(zip(scans, poses, times)):
         m.integrate(scan, pose, float(t))
@@ -82,26 +103,29 @@ def build_rows(seq_dir: Path, rng: np.random.Generator, keep_last_map: bool = Fa
             continue
         fov = m.render()
         sensor = pose[:2, 3]
-        xy, ref_count = window_centers(ref, sensor)
-        map_count = np.nan_to_num(fov.sample(xy, "count"))
-        cand = np.flatnonzero((ref_count > 0) | (map_count > 0))  # spots nobody ever saw: skip, trivial
-        pick = rng.choice(cand, size=min(CELLS_PER_SCAN, cand.size), replace=False)
-        xy = xy[pick]
-        scan_terrain = local_terrain(velo_to_world(scan, pose), "world", config.TERRAIN_CELL_M,
-                                     config.GROUND_PERCENTILE)
-        f_map = cell_features(fov.sample_many, xy, scan_terrain.sample(xy), sensor, float(t))
-        f_ref = cell_features(grid_sampler(ref), xy, ref_terrain.sample(xy), sensor, float(t))
-        rows["X"].append(feature_matrix(f_map))
-        rows["y"].append(geometric_classes(f_ref, ref_count[pick] >= config.REF_MIN_POINTS, TH))
-        rows["rule"].append(geometric_classes(f_map, map_count[pick] > 0, TH))
-        rows["map_obs"].append(map_count[pick] > 0)
-        rows["range"].append(f_map["range"])
-        rows["scan"].append(np.full(len(xy), i))
+        spots = sample_spots(fov, ref, ref_terrain, velo_to_world(scan, pose), sensor, float(t), rng)
+        for k, v in spots.items():
+            rows[k].append(v)
+        rows["scan"].append(np.full(len(spots["y"]), i))
         if keep_last_map:
+            scan_terrain = local_terrain(velo_to_world(scan, pose), "world", config.TERRAIN_CELL_M,
+                                         config.GROUND_PERCENTILE)
             last = (fov, ref, ref_terrain, scan_terrain, sensor, float(t))
     out = {k: np.concatenate(v) for k, v in rows.items()}
     out["last"] = last
     return out
+
+
+# small trees: 40 rounds x 15 leaves, depth 6. 300 rounds gave same F1 at 7x predict cost.
+GBT_PARAMS = {"max_iter": 40, "max_leaf_nodes": 15, "max_depth": 6, "learning_rate": 0.1}
+
+
+# fit 4-class gradient boosted trees on map-observed rows
+def fit_model(rows: dict) -> HistGradientBoostingClassifier:
+    obs = rows["map_obs"]
+    model = HistGradientBoostingClassifier(**GBT_PARAMS, class_weight="balanced", early_stopping=False,
+                                           random_state=SEED)
+    return model.fit(rows["X"][obs], rows["y"][obs])
 
 
 # model output: unknown where map saw nothing, classifier elsewhere
@@ -156,10 +180,7 @@ def main() -> None:
         print(f"  {name} truth mix: " + ", ".join(f"{c} {s:.1%}" for c, s in zip(CLASS_NAMES, share)))
     print()
 
-    obs = train["map_obs"]
-    model = HistGradientBoostingClassifier(max_iter=300, learning_rate=0.1, class_weight="balanced",
-                                           early_stopping=False, random_state=SEED)
-    model.fit(train["X"][obs], train["y"][obs])
+    model = fit_model(train)
     joblib.dump({"model": model, "features": FEATURES, "classes": CLASS_NAMES}, args.out / "hazard_hgb.joblib")
 
     p_train = predict(model, train["X"], train["map_obs"])
