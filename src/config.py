@@ -22,3 +22,9 @@ LOGODDS_MISS = -0.4
 LOGODDS_MIN = -2.0
 LOGODDS_MAX = 3.5
 TERRAIN_CELL_M = 2.0  # local terrain cell; 3x3 min window spans 6 m, wider than car
+
+# phase 4 geometric safety thresholds -> target classes. first picks, team approve / tune.
+HAZARD_STEP_M = 0.08  # ground change across 40 cm (curb, pothole edge)
+HAZARD_SLOPE = 0.15  # ground rise over 1 m (15 %, ~8.5 deg)
+HAZARD_ROUGH_M = 0.05  # z std inside cell (gravel, grass, broken surface)
+REF_MIN_POINTS = 5  # reference cell with fewer points over whole slice = unknown

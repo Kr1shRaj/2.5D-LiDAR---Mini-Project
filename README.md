@@ -15,6 +15,7 @@ pytest
 - `src/preprocess/` — range gate, ego box strip, frame transforms
 - `src/mapping/` — uniform 2.5D grid (Phase 1), foveated ring-band grid (Phase 2)
 - `src/temporal/` — offline reference accumulation, streaming foveated fusion (decay, ghost clearing, hand-off), local terrain
+- `src/models/` — 2.5D cell features, geometric safety targets, 4-class labels
 - `src/viz/` — top-down elevation + roughness plots
 - `tests/` — synthetic tests
 
@@ -27,6 +28,8 @@ python -m scripts.build_reference_map                      # dense world-frame r
 python -m scripts.eval_foveated                            # phase 2: uniform vs foveated memory, latency, error per ring
 python -m scripts.eval_preservation                        # phase 2: curb / step / obstacle preservation per ring
 python -m scripts.eval_temporal                            # phase 3: streaming fusion vs single scan: coverage, curbs, ghosts, cost
+python scripts/fetch_kitti_slice.py --seq 08 --start 1500 --count 100   # test slice (seq 08 frames 0-99 have broken GT poses)
+python -m scripts.train_hazard                             # phase 4: hazard classifier, train seq 00, test seq 08
 ```
 
 KITTI data is CC BY-NC-SA 3.0. Stays in `data/` (git ignored).

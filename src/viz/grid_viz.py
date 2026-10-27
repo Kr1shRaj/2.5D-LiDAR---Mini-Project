@@ -115,3 +115,31 @@ def plot_foveated(fov: FoveatedLayers, out_path: str | Path | None = None, title
     if out_path is not None:
         fig.savefig(out_path, dpi=120)
     return fig
+
+
+# side by side class maps. grids indexed [ix, iy]; -1 = never seen (white).
+def plot_class_maps(
+    grids: list[np.ndarray],
+    titles: list[str],
+    extent: tuple[float, float, float, float],
+    class_names: list[str],
+    out_path: str | Path | None = None,
+    title: str = "",
+) -> Figure:
+    colors = ["#4daf4a", "#ff7f00", "#e41a1c", "#9e9e9e"]  # traversable, hazardous, obstacle, unknown
+    cm = matplotlib.colors.ListedColormap(colors[: len(class_names)])
+    cm.set_bad("white")
+    fig, axes = plt.subplots(1, len(grids), figsize=(6 * len(grids), 6), constrained_layout=True)
+    for ax, g, t in zip(np.atleast_1d(axes), grids, titles):
+        ax.imshow(np.ma.masked_less(g.T.astype(float), 0), origin="lower", extent=extent, cmap=cm,
+                  vmin=-0.5, vmax=len(class_names) - 0.5, interpolation="nearest")
+        ax.set_title(t)
+        ax.set_aspect("equal")
+        ax.set_xlabel("x [m] (world)")
+        ax.set_ylabel("y [m] (world)")
+    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in colors[: len(class_names)]]
+    fig.legend(handles, class_names, loc="outside lower center", ncol=len(class_names))
+    fig.suptitle(title)
+    if out_path is not None:
+        fig.savefig(out_path, dpi=110)
+    return fig

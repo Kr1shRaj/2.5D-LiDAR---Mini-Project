@@ -1,5 +1,7 @@
 import argparse
+import http.client
 import io
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -34,8 +36,16 @@ class HttpRangeFile(io.RawIOBase):
             return 0
         end = min(self.pos + len(buf), self.size) - 1
         req = urllib.request.Request(self.url, headers={"Range": f"bytes={self.pos}-{end}"})
-        with urllib.request.urlopen(req) as resp:
-            data = resp.read()
+        # flaky link: retry cut transfers with backoff 2, 4, 8, 16 s
+        for wait in (2, 4, 8, 16, None):
+            try:
+                with urllib.request.urlopen(req) as resp:
+                    data = resp.read()
+                break
+            except (http.client.IncompleteRead, ConnectionError, TimeoutError):
+                if wait is None:
+                    raise
+                time.sleep(wait)
         buf[: len(data)] = data
         self.pos += len(data)
         return len(data)
@@ -50,6 +60,9 @@ def extract_members(url: str, wanted: list[str], out_dir: Path) -> None:
             if name not in names:
                 raise FileNotFoundError(f"{name} not in {url}")
             target = out_dir / Path(name).name
+            info = zf.getinfo(name)
+            if target.exists() and target.stat().st_size == info.file_size:
+                continue  # already fetched on earlier run
             target.write_bytes(zf.read(name))
 
 

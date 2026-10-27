@@ -124,11 +124,16 @@ class FoveatedLayers:
 
     # read one layer at query xy. NaN where outside bands or unobserved.
     def sample(self, xy: np.ndarray, name: str) -> np.ndarray:
+        return self.sample_many(xy, [name])[name]
+
+    # read many layers with one lookup. "resolution" = cell size of band hit. NaN outside bands.
+    def sample_many(self, xy: np.ndarray, names: list[str]) -> dict[str, np.ndarray]:
         band_idx, cell_idx = self.lookup(xy)
-        out = np.full(len(xy), np.nan)
+        out = {n: np.full(len(xy), np.nan) for n in names}
         for k, bl in enumerate(self.bands):
             sel = band_idx == k
-            out[sel] = bl.layer(name)[cell_idx[sel]]
+            for n in names:
+                out[n][sel] = bl.band.resolution if n == "resolution" else bl.layer(n)[cell_idx[sel]]
         return out
 
 
