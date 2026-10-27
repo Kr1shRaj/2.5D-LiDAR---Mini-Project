@@ -86,6 +86,7 @@ def sample_spots(fov, ref: GridLayers, ref_terrain: Terrain, scan_world: np.ndar
         "rule": geometric_classes(f_map, map_count[pick] > 0, TH),
         "map_obs": map_count[pick] > 0,
         "range": f_map["range"],
+        "xy": xy,
     }
 
 
@@ -95,7 +96,7 @@ def build_rows(seq_dir: Path, rng: np.random.Generator, keep_last_map: bool = Fa
     scans, poses, times = load_sequence(seq_dir)
     ref, ref_terrain = build_reference(scans, poses)
     m = TemporalFoveatedMap(bands, PARAMS)
-    rows: dict[str, list] = {k: [] for k in ("X", "y", "rule", "map_obs", "range", "scan")}
+    rows: dict[str, list] = {k: [] for k in ("X", "y", "rule", "map_obs", "range", "xy", "scan")}
     last = None
     for i, (scan, pose, t) in enumerate(zip(scans, poses, times)):
         m.integrate(scan, pose, float(t))
@@ -116,8 +117,9 @@ def build_rows(seq_dir: Path, rng: np.random.Generator, keep_last_map: bool = Fa
     return out
 
 
-# small trees: 40 rounds x 15 leaves, depth 6. 300 rounds gave same F1 at 7x predict cost.
-GBT_PARAMS = {"max_iter": 40, "max_leaf_nodes": 15, "max_depth": 6, "learning_rate": 0.1}
+# small fast trees: 15 rounds x 15 leaves, depth 6, lr 0.25. picked on seq 00 hold-out (time blocks):
+# same F1 as 40 / 300 rounds, 3x / 20x faster predict. see outputs/phase5_model_speed.txt
+GBT_PARAMS = {"max_iter": 15, "max_leaf_nodes": 15, "max_depth": 6, "learning_rate": 0.25}
 
 
 # fit 4-class gradient boosted trees on map-observed rows

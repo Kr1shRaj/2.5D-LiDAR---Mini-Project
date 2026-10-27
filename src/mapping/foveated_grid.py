@@ -66,6 +66,15 @@ class BandLayers:
     z_var: np.ndarray
     ground: np.ndarray
     extra: dict[str, np.ndarray] = field(default_factory=dict)  # optional layers, e.g. fused confidence
+    _index: np.ndarray | None = field(default=None, repr=False, compare=False)
+
+    # dense [flat cell] -> compact index map, -1 = cell outside annulus. built once, O(1) lookups after.
+    def index_map(self) -> np.ndarray:
+        if self._index is None:
+            idx = np.full(self.spec.nx * self.spec.ny, -1, dtype=np.int64)
+            idx[self.flat_ids] = np.arange(self.flat_ids.size)
+            self._index = idx
+        return self._index
 
     @property
     def observed(self) -> np.ndarray:
@@ -114,12 +123,11 @@ class FoveatedLayers:
         for k, bl in enumerate(self.bands):
             sel = np.flatnonzero((r >= bl.band.r_min) & (r < bl.band.r_max))
             ix, iy, valid = point_to_cell(xy[sel], bl.spec)
-            flat = ix * bl.spec.ny + iy
-            pos = np.searchsorted(bl.flat_ids, flat)
-            pos_c = np.minimum(pos, bl.n_cells - 1)
-            hit = valid & (bl.flat_ids[pos_c] == flat)
+            sel, flat = sel[valid], ix[valid] * bl.spec.ny + iy[valid]
+            pos = bl.index_map()[flat]
+            hit = pos >= 0
             band_idx[sel[hit]] = k
-            cell_idx[sel[hit]] = pos_c[hit]
+            cell_idx[sel[hit]] = pos[hit]
         return band_idx, cell_idx
 
     # read one layer at query xy. NaN where outside bands or unobserved.

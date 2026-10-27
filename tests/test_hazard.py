@@ -63,3 +63,47 @@ def test_missing_terrain_never_obstacle(yard) -> None:
     xy = np.array([[-2.45, -2.45]])
     f = cell_features(grid_sampler(yard), xy, np.array([np.nan]), np.zeros(2), 0.0)
     assert geometric_classes(f, np.array([True]), TH).tolist() != [OBSTACLE]
+
+
+class CountingModel:
+    # fake model: label = 1 for every row, counts rows seen
+    def __init__(self) -> None:
+        self.rows = 0
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        self.rows += len(X)
+        return np.ones(len(X), dtype=np.int64)
+
+
+def test_labeler_relabels_only_touched_cells_in_zone() -> None:
+    from src.mapping.foveated_grid import Band
+    from src.models.labeler import HazardLabeler
+    from src.temporal.fusion import FusionParams, TemporalFoveatedMap
+
+    bands = (Band(0.0, 5.0, 0.2), Band(5.0, 15.0, 0.5))
+    params = FusionParams(tau_s=3.0, prune_weight=0.05, obstacle_h=0.3, l_hit=0.85, l_miss=-0.4, l_min=-2.0,
+                          l_max=3.5, terrain_cell=2.0, ground_percentile=10.0)
+    rng = np.random.default_rng(seed=32)
+    pts = np.column_stack([rng.uniform(-14, 14, 60000), rng.uniform(-14, 14, 60000), np.full(60000, GROUND_Z)])
+    pts = pts[np.hypot(pts[:, 0], pts[:, 1]) < 14.0]
+    m = TemporalFoveatedMap(bands, params)
+    model = CountingModel()
+    lab = HazardLabeler(model, zone_m=5.0)
+    m.integrate(pts, np.eye(4), t=0.0)
+    first = lab.update(m.render(), m.terrain, 0.0)
+    assert first > 0 and model.rows == first
+    near_cells = int(m.render().bands[0].observed.sum())
+    assert first <= near_cells  # coarse band past zone never labelled
+    # same flat scene again at 0.1 s: nothing changed, labels young -> almost no model work (few new edge cells)
+    m.integrate(pts, np.eye(4), t=0.1)
+    assert lab.update(m.render(), m.terrain, 0.1) < first / 50
+    # box appears in small patch: only changed cells re-labelled (event)
+    box = np.column_stack([rng.uniform(1.6, 2.4, 3000), rng.uniform(-0.4, 0.4, 3000), rng.uniform(GROUND_Z, GROUND_Z + 1, 3000)])
+    m.integrate(np.vstack([pts, box]), np.eye(4), t=0.2)
+    second = lab.update(m.render(), m.terrain, 0.2)
+    assert 0 < second < first / 10
+    # 0.3 s after first label: periodic refresh of every touched cell in zone
+    m.integrate(pts, np.eye(4), t=0.3)
+    assert lab.update(m.render(), m.terrain, 0.3) > first / 2
+    got = lab.labels_at(m.render(), np.array([[1.0, 1.0], [10.0, 0.0]]))
+    assert got.tolist() == [1, -1]  # inside zone labelled, outside zone left to rule

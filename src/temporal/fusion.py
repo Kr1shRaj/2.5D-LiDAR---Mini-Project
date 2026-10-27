@@ -5,7 +5,7 @@ import numpy as np
 from src.mapping.foveated_grid import Band, BandLayers, FoveatedLayers, annulus_mask, validate_bands
 from src.mapping.uniform_grid import build_uniform_grid, spec_from_bounds
 from src.preprocess.transforms import velo_to_world
-from src.temporal.terrain import local_terrain
+from src.temporal.terrain import Terrain, local_terrain
 
 # Streaming foveated map in WORLD frame. Cells sit on world-aligned lattices (one per band
 # resolution), so vehicle rotation never resamples a cell. Rings follow the sensor.
@@ -257,6 +257,7 @@ class TemporalFoveatedMap:
         self.stores = [empty_store(b.resolution) for b in bands]
         self.t: float | None = None
         self.sensor_xy = np.zeros(2)
+        self.terrain: Terrain | None = None  # local terrain of latest scan, reused by hazard labeler
 
     @property
     def nbytes(self) -> int:
@@ -308,6 +309,7 @@ class TemporalFoveatedMap:
         r_out = self.bands[-1].r_max
         terrain = local_terrain(world[r < r_out], "world", self.params.terrain_cell, self.params.ground_percentile,
                                 bounds=(cx - r_out, cx + r_out, cy - r_out, cy + r_out))
+        self.terrain = terrain
         for k, band in enumerate(self.bands):
             pts = world[(r >= band.r_min) & (r < band.r_max)]
             if len(pts) == 0:

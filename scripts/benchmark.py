@@ -6,12 +6,11 @@ import numpy as np
 from sklearn.metrics import f1_score, precision_recall_fscore_support
 
 from src import config
-from src.mapping.foveated_grid import Band, FoveatedLayers
-from src.models.features import cell_features, feature_matrix
-from src.models.targets import CLASS_NAMES, OBSTACLE, TRAVERSABLE, geometric_classes
+from src.mapping.foveated_grid import Band
+from src.models.labeler import HazardLabeler
+from src.models.targets import CLASS_NAMES, OBSTACLE, TRAVERSABLE
 from src.preprocess.transforms import velo_to_world
 from src.temporal.fusion import TemporalFoveatedMap
-from src.temporal.terrain import local_terrain
 from scripts.eval_temporal import EVAL_RINGS, PARAMS, coverage, curbs, ghosts, obstacles
 from scripts.eval_preservation import reference_edges
 from scripts.train_hazard import (
@@ -30,6 +29,7 @@ R = config.RANGE_MAX_M
 SCORE_FROM = 10
 SCORE_STRIDE = 10
 CURB_D = 0.1  # sharp curb test: probes 20 cm apart
+ZONE_M = 25.0  # model labels reaction zone (near + mid rings); threshold rule beyond
 
 MAPS: dict[str, tuple[Band, ...]] = {
     "uniform U-20": (Band(0.0, R, 0.2),),
@@ -37,34 +37,21 @@ MAPS: dict[str, tuple[Band, ...]] = {
 }
 
 
-# label observed rendered cells: features at cell centres + model. fresh_only = just cells this scan touched.
-def label_map(fov: FoveatedLayers, model, scan_world: np.ndarray, sensor: np.ndarray, t: float,
-              fresh_only: bool) -> float:
-    t0 = time.perf_counter()
-    centers = []
-    for bl in fov.bands:
-        sel = bl.observed & (bl.layer("last_seen") == t) if fresh_only else bl.observed
-        ix, iy = np.divmod(bl.flat_ids[sel], bl.spec.ny)
-        centers.append(np.column_stack([bl.spec.x_min + (ix + 0.5) * bl.spec.resolution,
-                                        bl.spec.y_min + (iy + 0.5) * bl.spec.resolution]))
-    xy = np.vstack(centers)
-    terrain = local_terrain(scan_world, "world", config.TERRAIN_CELL_M, config.GROUND_PERCENTILE)
-    f = cell_features(fov.sample_many, xy, terrain.sample(xy), sensor, t)
-    model.predict(feature_matrix(f))
-    return (time.perf_counter() - t0) * 1e3
-
-
 # stream test slice through one map; collect cost, height, curb, obstacle, ghost, hazard rows
 def run_map(bands: tuple[Band, ...], test: tuple, ref, ref_terrain, edges, model) -> dict:
     scans, poses, times = test
     m = TemporalFoveatedMap(bands, PARAMS)
-    out = {"ms": [], "store": [], "render": [], "label_ms": [], "fresh_ms": [], "cov": [[0, 0, []] for _ in EVAL_RINGS],
+    labeler = HazardLabeler(model, ZONE_M)
+    out = {"ms": [], "store": [], "render": [], "label_ms": [], "labelled": [], "cov": [[0, 0, []] for _ in EVAL_RINGS],
            "curb": [], "ghost": [0, 0, 0], "obst": [0, 0, 0], "rows": []}
     for i, (scan, pose, t) in enumerate(zip(scans, poses, times)):
         t0 = time.perf_counter()
         m.integrate(scan, pose, float(t))
         fov = m.render()
         out["ms"].append((time.perf_counter() - t0) * 1e3)
+        t0 = time.perf_counter()
+        out["labelled"].append(labeler.update(fov, m.terrain, float(t)))
+        out["label_ms"].append((time.perf_counter() - t0) * 1e3)
         out["store"].append(m.nbytes / 1e6)
         out["render"].append(fov.nbytes / 1e6)
         if i < SCORE_FROM or (i - SCORE_FROM) % SCORE_STRIDE:
@@ -80,9 +67,9 @@ def run_map(bands: tuple[Band, ...], test: tuple, ref, ref_terrain, edges, model
         for j, v in enumerate(obstacles(fov, ref, world)):
             out["obst"][j] += v
         # same seed per scan for every map: spot draw differs only where maps differ
-        out["rows"].append(sample_spots(fov, ref, ref_terrain, world, sensor, float(t), np.random.default_rng([SEED, i])))
-        out["label_ms"].append(label_map(fov, model, world, sensor, float(t), fresh_only=False))
-        out["fresh_ms"].append(label_map(fov, model, world, sensor, float(t), fresh_only=True))
+        spots = sample_spots(fov, ref, ref_terrain, world, sensor, float(t), np.random.default_rng([SEED, i]))
+        spots["zone_label"] = labeler.labels_at(fov, spots["xy"])
+        out["rows"].append(spots)
     out["rows"] = {k: np.concatenate([r[k] for r in out["rows"]]) for k in out["rows"][0]}
     return out
 
@@ -126,22 +113,26 @@ def main() -> None:
     print()
     res = {name: run_map(bands, test, ref, ref_terrain, edges, models[name]) for name, bands in MAPS.items()}
 
-    triad = [("1 uniform", "uniform U-20", False), ("2 foveated", "foveated F-A", False),
-             ("3 foveated + model", "foveated F-A", True), ("(extra) uniform + model", "uniform U-20", True)]
+    # mode: rule = threshold rule everywhere; zone = model 0-ZONE_M (real-time labeler) + rule beyond;
+    # all = model on every ring (offline reference, not timed)
+    triad = [("1 uniform", "uniform U-20", "rule"), ("2 foveated", "foveated F-A", "rule"),
+             ("3 foveated + model", "foveated F-A", "zone"), ("(extra) uniform + model", "uniform U-20", "zone"),
+             ("(offline) foveated + model all rings", "foveated F-A", "all")]
 
-    print("COST")
+    print(f"COST PER SCAN (all {n} scans). label = incremental model labeler, 0-{ZONE_M:g} m.")
     rows = []
-    for label, mk, use_model in triad:
+    for label, mk, mode in triad[:4]:
         r = res[mk]
         ms = np.array(r["ms"][1:])
-        lab = np.array(r["label_ms"]) if use_model else np.zeros(1)
-        fresh = np.array(r["fresh_ms"]) if use_model else np.zeros(1)
-        rows.append([label, f"{np.median(ms):.1f}", f"{np.percentile(ms, 95):.1f}",
-                     f"{np.median(lab):.1f} / {np.median(fresh):.1f}" if use_model else "-",
-                     f"{np.median(ms) + np.median(fresh):.1f}",
+        lab = np.array(r["label_ms"][1:]) if mode == "zone" else np.zeros_like(ms)
+        tot = ms + lab
+        rows.append([label, f"{np.median(ms):.1f} / {np.percentile(ms, 95):.1f}",
+                     f"{np.median(lab):.1f} / {np.percentile(lab, 95):.1f}" if mode == "zone" else "-",
+                     f"{np.median(r['labelled'][1:]):.0f}" if mode == "zone" else "-",
+                     f"**{np.median(tot):.1f} / {np.percentile(tot, 95):.1f}**", f"{np.mean(tot > 100) * 100:.1f}%",
                      f"{max(r['store']):.2f}", f"{np.median(r['render']):.2f}"])
-    table(["config", "map ms med", "map ms p95", "+ label ms med (whole map / this-scan cells)",
-           "total ms med (map + this-scan label)", "store MB max", "rendered MB"], rows)
+    table(["config", "map ms med / p95", "label ms med / p95", "cells labelled / scan", "total ms med / p95",
+           "scans over 100 ms", "store MB max", "rendered MB"], rows)
 
     print("HEIGHT RECONSTRUCTION vs dense reference (ground, metres) + coverage")
     rows = []
@@ -164,15 +155,32 @@ def main() -> None:
         rows.append([mk, *curb, f"{tp / max(t_, 1) * 100:.1f}%", f"{f / max(t_, 1):.2f}x", f"{r['ghost'][0] * 0.04:.0f}"])
     table(["map", "curb kept 2-10", "curb kept 10-25", "curb kept 25-50", "obstacle recall", "area bloat", "ghost m2"], rows)
 
-    print("HAZARD LABELS on test (P / R / F1 per class). configs 1-2 = threshold rule on map, 3 = trained model.")
-    rows = []
-    for label, mk, use_model in triad:
+    print(f"HAZARD LABELS on test (P / R / F1 per class). 1-2 = threshold rule; 3 = model 0-{ZONE_M:g} m + rule beyond.")
+    rows, preds = [], {}
+    for label, mk, mode in triad:
         d = res[mk]["rows"]
-        p = predict(models[mk], d["X"], d["map_obs"]) if use_model else d["rule"]
+        if mode == "all":
+            p = predict(models[mk], d["X"], d["map_obs"])
+        elif mode == "zone":
+            p = np.where(d["zone_label"] >= 0, d["zone_label"], d["rule"])
+        else:
+            p = d["rule"]
         s = hazard_scores(d["y"], p)
         cells = [f"{s['pr'][k]:.2f} / {s['rc'][k]:.2f} / {s['f1'][k]:.2f}" for k in range(len(CLASS_NAMES))]
         rows.append([label, f"{s['macro']:.3f}", *cells, f"{s['miss']:.1%}"])
+        preds[label] = (d, p)
     table(["config", "macro F1", *CLASS_NAMES, "obstacle called traversable"], rows)
+
+    print(f"HAZARD BY RING: macro F1 / obstacle called traversable. reaction zone = 0-{ZONE_M:g} m.")
+    rows = []
+    for label, (d, p) in preds.items():
+        cells = []
+        for lo, hi in ((2.0, ZONE_M), *EVAL_RINGS):
+            sel = (d["range"] >= lo) & (d["range"] < hi)
+            s = hazard_scores(d["y"][sel], p[sel])
+            cells.append(f"{s['macro']:.3f} / {s['miss']:.1%}")
+        rows.append([label, *cells])
+    table(["config", f"2-{ZONE_M:g} m (zone)", *[f"{lo:g}-{hi:g} m" for lo, hi in EVAL_RINGS]], rows)
     print(f"spots per map: {', '.join(f'{mk} {len(res[mk]['rows']['y'])}' for mk in MAPS)}. "
           f"thresholds: obstacle {TH.obstacle_h} m, step {TH.step} m, slope {TH.slope:.0%}, rough {TH.rough} m.")
 

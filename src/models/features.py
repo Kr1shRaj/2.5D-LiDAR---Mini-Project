@@ -52,10 +52,12 @@ def cell_features(sample_many: Sampler, xy: np.ndarray, terrain_z: np.ndarray, s
     c = sample_many(xy, LAYERS)
     # NaN-safe: count 0 cells have NaN layers already, missing count = 0
     count = np.nan_to_num(c["count"], nan=0.0)
-    g = {}
-    for name, (dx, dy) in {"x+": (STEP_D_M, 0), "x-": (-STEP_D_M, 0), "y+": (0, STEP_D_M), "y-": (0, -STEP_D_M),
-                           "X+": (SLOPE_D_M, 0), "X-": (-SLOPE_D_M, 0), "Y+": (0, SLOPE_D_M), "Y-": (0, -SLOPE_D_M)}.items():
-        g[name] = sample_many(xy + np.array([dx, dy]), ["ground"])["ground"]
+    offsets = {"x+": (STEP_D_M, 0), "x-": (-STEP_D_M, 0), "y+": (0, STEP_D_M), "y-": (0, -STEP_D_M),
+               "X+": (SLOPE_D_M, 0), "X-": (-SLOPE_D_M, 0), "Y+": (0, SLOPE_D_M), "Y-": (0, -SLOPE_D_M)}
+    # all 8 neighbour probes in one batched lookup
+    probes = np.concatenate([xy + np.array(o) for o in offsets.values()])
+    ground = sample_many(probes, ["ground"])["ground"].reshape(len(offsets), len(xy))
+    g = dict(zip(offsets, ground))
     step_x, step_y = np.abs(g["x+"] - g["x-"]), np.abs(g["y+"] - g["y-"])
     both_nan = np.isnan(step_x) & np.isnan(step_y)
     step = np.where(both_nan, np.nan, np.fmax(step_x, step_y))
