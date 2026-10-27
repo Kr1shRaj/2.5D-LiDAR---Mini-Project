@@ -95,3 +95,14 @@ def test_foveated_stores_fewer_cells_than_fine_uniform(scene: np.ndarray) -> Non
 def test_frame_mismatch_rejected(scene: np.ndarray) -> None:
     with pytest.raises(ValueError, match="frame"):
         build_foveated_grid(scene, BANDS, frame="velo", points_frame="world", ground_percentile=10.0)
+
+
+def test_locked_config_bands_valid() -> None:
+    from src import config
+
+    validate_bands(config.FOVEATED_BANDS)
+    assert [(b.r_min, b.r_max, b.resolution) for b in config.FOVEATED_BANDS] == [
+        (0.0, 10.0, 0.1),
+        (10.0, 25.0, 0.2),
+        (25.0, 50.0, 0.5),
+    ]
