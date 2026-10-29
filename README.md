@@ -20,7 +20,8 @@ Full project report with all five phases, architecture and benchmark tables: [`d
 - `src/mapping/` — uniform 2.5D grid (Phase 1), foveated ring-band grid (Phase 2)
 - `src/temporal/` — offline reference accumulation, streaming foveated fusion (decay, ghost clearing, hand-off), local terrain
 - `src/models/` — 2.5D cell features, geometric safety targets, 4-class labels
-- `src/viz/` — top-down elevation + roughness plots
+- `src/viz/` — top-down elevation + roughness plots, replay frame encoder for the viewer
+- `viewer/` — browser replay of the foveated map (static HTML + JS, reads exported files only). See [`viewer/README.md`](viewer/README.md)
 - `tests/` — synthetic tests
 
 ## Real data check (KITTI odometry seq 00)
@@ -37,6 +38,13 @@ python -m scripts.train_hazard                             # phase 4: hazard cla
 python scripts/fetch_kitti_slice.py --seq 00 --start 0 --count 300 --out data/kitti_long
 python scripts/fetch_kitti_slice.py --seq 08 --start 1500 --count 300 --out data/kitti_long
 python -m scripts.benchmark                                # phase 5: uniform vs foveated vs foveated + model (train 00, test 08)
+```
+
+## Replay viewer
+
+```bash
+python -m scripts.export_replay                            # writes outputs/replay/08_1500-1799/ (~124 MB)
+python -m http.server 8000 --bind 127.0.0.1                # open http://127.0.0.1:8000/viewer/
 ```
 
 KITTI data is CC BY-NC-SA 3.0. Stays in `data/` (git ignored).

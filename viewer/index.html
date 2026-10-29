@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foveated Map Replay</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Foveated 2.5D map replay</h1>
+  <span id="slice" class="muted"></span>
+  <span class="spacer"></span>
+  <label>Fill
+    <select id="fill">
+      <option value="hazard">Hazard labels</option>
+      <option value="height">Height over terrain</option>
+      <option value="ground">Ground elevation</option>
+      <option value="confidence">Confidence + hand-off</option>
+    </select>
+  </label>
+  <label>View
+    <select id="viewmode">
+      <option value="ego">Car centred, heading up</option>
+      <option value="follow">Car centred, world axes</option>
+      <option value="world">World fixed</option>
+    </select>
+  </label>
+  <span class="toggles">
+    <label><input type="checkbox" id="rings" checked> Rings</label>
+    <label><input type="checkbox" id="path" checked> Path</label>
+    <label><input type="checkbox" id="car" checked> Car</label>
+  </span>
+</header>
+
+<main>
+  <section id="stage">
+    <canvas id="map"></canvas>
+    <div id="legend"></div>
+    <div id="status" hidden></div>
+    <div id="timeline">
+      <button id="prev" title="Step back (←)">◀︎</button>
+      <button id="play" title="Play / pause (space)">▶︎</button>
+      <button id="next" title="Step forward (→)">▶︎|</button>
+      <input type="range" id="scrub" min="0" max="0" value="0" aria-label="Frame">
+      <span id="frameno" class="mono"></span>
+      <select id="speed" title="Playback speed vs real time (10 Hz scans)">
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+        <option value="4">4×</option>
+      </select>
+      <button id="reset" title="Reset view (R)">Reset view</button>
+    </div>
+  </section>
+
+  <aside id="panel">
+    <section>
+      <h2>Pipeline per scan <span class="muted small">measured at export</span></h2>
+      <div class="kv">
+        <span>Map (integrate + render)</span><b id="h-map" class="mono"></b>
+        <span>Hazard labeler</span><b id="h-label" class="mono"></b>
+        <span>Total</span><b id="h-total" class="mono"></b>
+      </div>
+      <canvas id="spark" height="56" title="Total ms per scan. Click to seek."></canvas>
+      <p class="small muted" id="h-summary"></p>
+    </section>
+    <section>
+      <h2>Map state</h2>
+      <div class="kv">
+        <span>Stored cells memory</span><b id="h-store" class="mono"></b>
+        <span>Rendered layers memory</span><b id="h-render" class="mono"></b>
+        <span>Cells model re-labelled</span><b id="h-labelled" class="mono"></b>
+        <span>Occupied cells (log-odds &gt; 0)</span><b id="h-occ" class="mono"></b>
+      </div>
+      <div id="h-bands" class="kv"></div>
+      <div id="h-classes" class="kv"></div>
+    </section>
+    <section>
+      <h2>Cell inspector</h2>
+      <div id="inspect" class="kv"><span class="muted small">Click map to pin a spot. Pin stays on same world spot while scans play.</span></div>
+    </section>
+    <section class="small muted">
+      <p>Replay: <b id="h-fps" class="mono">–</b> frames/s in browser. Browser replay speed is not pipeline speed.</p>
+      <p id="h-cpu"></p>
+      <p>Candidate hazard labels from geometry and a small model. Not collision prediction. Research prototype.</p>
+      <p>Keys: space play · ←/→ step · shift ±10 · 1–4 fill · V view · R reset.</p>
+    </section>
+  </aside>
+</main>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

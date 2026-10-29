@@ -46,6 +46,8 @@ Research prototype only. Not production vehicle collision-avoidance system.
   - `src/temporal/`: multi-scan fusion, cell confidence, stale decay, ghost trail filter.
   - `src/models/`: terrain and hazard classification.
   - `src/viz/`: raw cloud overlay, elevation heatmaps, resolution band viz.
+  - `viewer/`: browser replay (HTML + plain JS, no build). Pure consumer of files from
+    `scripts/export_replay.py`. Never imports or calls `src/`; delete it and core still works.
 - **Coordinate frames are sacred.** Sensor (velodyne) frame, camera frame, and world frame
   must never be mixed silently. Every transform uses explicit calibration (`Tr`, `poses.txt`).
 - **Stubs raise `NotImplementedError`.** Never return fabricated or fake elevation values.
