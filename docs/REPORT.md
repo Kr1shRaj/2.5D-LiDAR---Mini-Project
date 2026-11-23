@@ -116,7 +116,8 @@ decayed confidence weight, obstacle log-odds, last-seen time, and an `inherited`
 - Ghost clearing: obstacle log-odds per cell; when a scan sees the cell free and evidence drops to ≤ 0, the old
   z max is dropped.
 - Hand-off: cells leaving a ring outward merge into the coarser lattice; coarse cells entering a finer ring split
-  into flagged placeholder children, replaced by the first real fine observation.
+  into flagged placeholder children, replaced by the first real fine observation. (Map v1 rule. Map v2 below
+  changes the edge handling.)
 
 | Seq 00, near ring 2–10 m | single scan | fused, no seeding | **fused + seeding** | fused uniform 20 cm |
 |---|---|---|---|---|
@@ -226,6 +227,48 @@ The whole-slice macro F1 of config 3 (0.358) is pulled down by the 25–50 m rin
 sampled spots and still uses the rule; inside the reaction zone the model lifts macro F1 from 0.419 to 0.472
 and cuts obstacle-called-traversable from 25.9 % to 16.0 %.
 
+### Map v2 — ring seam fix (after Phase 5)
+
+The replay viewer showed thin empty arcs just outside the 10 m and 25 m ring edges.
+
+**Cause:**
+- Lookup picks the ring by the query point's own range.
+- Map v1 moved a coarse cell into the finer ring as soon as its *centre* crossed the edge.
+- So the outer part of an edge cell lost its history.
+- Fine cells just past the edge also kept theirs in the fine store, which lookup never reads there.
+
+**Map v2 (`MAP_VERSION = 2`):**
+- A cell whose square crosses a ring edge is kept in **both** rings:
+  - A coarse cell reaching into a finer ring seeds missing fine children, and leaves only when its whole square is inside.
+  - A fine cell reaching past its ring builds its missing coarse parent, and leaves only when its whole square is outside.
+- Copies are made only when missing, so no observation is counted twice (tested: cell weight never exceeds the one-ring steady state).
+- Each ring also takes points up to one own-cell diagonal past its edges, for cells touching that ring. Edge cells then see their whole square, not just their own side.
+
+Observed share of map lookups by offset from the ring edge (seq 08, 29 scans, `scripts/eval_seams.py`):
+
+| Edge | Map | −0.2..−0.1 m | −0.1..0 m | 0..+0.1 m | +0.1..+0.2 m | +0.3..+0.4 m |
+|---|---|---|---|---|---|---|
+| 10 m | v1 | 93.3 % | 84.8 % | **64.5 %** | 84.3 % | 93.1 % |
+| 10 m | v2 | 93.6 % | 93.6 % | **93.7 %** | 93.5 % | 93.2 % |
+| 25 m | v1 | 54.6 % | 50.5 % | **29.4 %** | 37.1 % | 49.1 % |
+| 25 m | v2 | 59.2 % | 59.4 % | **59.6 %** | 59.9 % | 59.3 % |
+
+Benchmark, both maps run on the same day (timing varies between days; Phase 5 numbers were another day):
+
+| Measure (seq 08 test) | Map v1 (same-day rerun) | Map v2 |
+|---|---|---|
+| Foveated map ms, median / p95 | 49.2 / 65.3 | 48.6 / 59.9 |
+| Foveated + model total ms, median / p95 | 72.9 / 95.4 | 70.9 / 87.1 |
+| Scans over 100 ms (foveated + model) | 1.0 % | 0.0 % |
+| 0–25 m macro F1: foveated + model / uniform + model | 0.472 / 0.518 | 0.478 / 0.513 |
+| 0–25 m obstacle called traversable: foveated + model | 16.0 % | 15.4 % |
+| Curbs kept 2–10 / 10–25 / 25–50 m (foveated) | 50 / 24 / 8 % | 50 / 24 / 8 % |
+| Ghost area (foveated) | 1386 m² | 1372 m² |
+
+- The v1 rerun reproduces the Phase 5 hazard numbers exactly (deterministic pipeline).
+- The fix narrows the model gap from 0.046 to 0.035. It does not close it.
+- Map p95 is within the 65 ms map budget on this run.
+
 ## 5. Measured trade-offs
 
 1. **Memory: foveation wins.** Half the rendered map (4.70 vs 9.47 MB) and 20 % less stored state, with
@@ -248,8 +291,10 @@ and cuts obstacle-called-traversable from 25.9 % to 16.0 %.
 
 ### Next steps
 
-- Close the foveated vs uniform gap for the classifier (neighbour context features, or label the far ring on a
-  finer virtual grid).
+- Close the foveated vs uniform gap for the classifier (0.035 after map v2): diagnose by cell size and
+  inherited flag first, then neighbour context features. Tune on a separate validation sequence (seq 05).
+- Candidate corridor check on the map (planned: `src/planning/`), scored live map vs reference map.
+- Adaptive refinement in the far ring on steps / variance / obstacle cues (far curbs kept: 8 % vs 19 % uniform).
 - Cut p95 latency (render and hand-off still ~20 ms; a compiled implementation would remove most Python overhead).
 - Validate on more sequences and with SemanticKITTI labels for moving objects.
 

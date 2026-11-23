@@ -12,6 +12,7 @@ pytest
 ## Report
 
 Full project report with all five phases, architecture and benchmark tables: [`docs/REPORT.md`](docs/REPORT.md).
+Team contracts (map ↔ model ↔ corridor, latency budget, data split): [`docs/INTERFACES.md`](docs/INTERFACES.md).
 
 ## Layout
 
@@ -38,6 +39,8 @@ python -m scripts.train_hazard                             # phase 4: hazard cla
 python scripts/fetch_kitti_slice.py --seq 00 --start 0 --count 300 --out data/kitti_long
 python scripts/fetch_kitti_slice.py --seq 08 --start 1500 --count 300 --out data/kitti_long
 python -m scripts.benchmark                                # phase 5: uniform vs foveated vs foveated + model (train 00, test 08)
+python -m scripts.eval_seams                               # map v2: observed share around ring edges (seam check)
+python -m scripts.export_snapshots --seq data/kitti_long/sequences/00   # frozen fused maps for model work (docs/INTERFACES.md)
 ```
 
 ## Replay viewer
