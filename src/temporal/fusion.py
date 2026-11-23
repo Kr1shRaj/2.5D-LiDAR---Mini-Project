@@ -71,6 +71,7 @@ class CellStore:
     logodds: np.ndarray
     last_seen: np.ndarray
     n_obs: np.ndarray
+    points: np.ndarray  # decayed weighted mean of points per scan in cell (point density, not history length)
     inherited: np.ndarray  # True = placeholder copied from coarse parent, no own fine scan yet
 
     @property
@@ -85,7 +86,7 @@ class CellStore:
 ARRAY_FIELDS = [f.name for f in fields(CellStore) if f.name != "resolution"]
 FILL = {"keys": 0, "weight": 0.0, "mean": np.nan, "m2": 0.0, "z_min": np.nan, "z_max": np.nan,
         "ground": np.nan, "logodds": 0.0, "last_seen": -np.inf, "n_obs": 0,
-        "inherited": False}
+        "points": 0.0, "inherited": False}
 DTYPES = {"keys": np.int64, "n_obs": np.int64, "inherited": bool}
 
 
@@ -173,12 +174,14 @@ def integrate_obs(store: CellStore, obs: ScanObs, terrain_z: np.ndarray, t: floa
     w0 = np.where(seen, new["weight"][oi], 0.0)
     m0 = np.where(seen, new["mean"][oi], 0.0)
     g0 = np.where(seen, new["ground"][oi], 0.0)
+    p0 = np.where(seen, new["points"][oi], 0.0)
     m2_0 = np.where(seen, new["m2"][oi], 0.0)
     w1 = w0 + 1.0
     # weighted merge of old cell (weight w0) with this scan (weight 1)
     new["mean"][oi] = (w0 * m0 + obs.mean) / w1
     new["m2"][oi] = m2_0 + obs.var + (obs.mean - m0) ** 2 * w0 / w1
     new["ground"][oi] = (w0 * g0 + obs.ground) / w1
+    new["points"][oi] = (w0 * p0 + obs.n) / w1
     new["z_min"][oi] = np.fmin(np.where(seen, new["z_min"][oi], np.nan), obs.z_min)
 
     known = np.isfinite(terrain_z)
@@ -226,6 +229,12 @@ def merge_children(coarse: CellStore, fine: CellStore) -> CellStore:
     np.maximum.at(n_obs, inv, cat["n_obs"])
     out["n_obs"] = n_obs
     out["m2"] = out["weight"] * var
+    # parent points per scan = sum over its children, at least what parent already had
+    nc = coarse.size
+    kids = np.bincount(inv[nc:], weights=cat["points"][nc:], minlength=keys.size)
+    own = np.zeros(keys.size)
+    own[inv[:nc]] = cat["points"][:nc]
+    out["points"] = np.maximum(own, kids)
     # merged cell is placeholder only if every part was placeholder
     out["inherited"] = np.bincount(inv, weights=(~cat["inherited"]).astype(np.float64), minlength=keys.size) == 0
     return CellStore(resolution=res, **out)
@@ -251,6 +260,7 @@ def split_into_children(coarse: CellStore, fine_res: float) -> CellStore:
     keys = encode_keys(np.broadcast_to(cx, valid.shape)[valid], np.broadcast_to(cy, valid.shape)[valid])
     out = {n: getattr(coarse, n)[parent] for n in ARRAY_FIELDS if n != "keys"}
     out["inherited"] = np.ones(keys.size, dtype=bool)
+    out["points"] = out["points"] * (fine_res / res) ** 2  # share of parent points by area
     order = np.argsort(keys)
     return CellStore(resolution=fine_res, keys=keys[order], **{n: a[order] for n, a in out.items()})
 
@@ -382,7 +392,7 @@ class TemporalFoveatedMap:
                 z_min=pick("z_min", np.nan), z_max=pick("z_max", np.nan), z_mean=pick("mean", np.nan),
                 z_var=z_var, ground=pick("ground", np.nan),
                 extra={"weight": weight, "logodds": pick("logodds", 0.0), "last_seen": pick("last_seen", np.nan),
-                       "inherited": pick("inherited", 0.0)},
+                       "inherited": pick("inherited", 0.0), "points": pick("points", np.nan)},
             ))
         return FoveatedLayers(bands=out, frame="world", ground_percentile=self.params.ground_percentile,
                               center=(float(cx), float(cy)))

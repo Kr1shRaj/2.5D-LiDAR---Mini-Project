@@ -285,3 +285,25 @@ def test_snapshot_round_trip(tmp_path) -> None:
     assert np.isnan(a["z_max"]).any()  # unobserved spots really tested
     np.testing.assert_array_equal(m.terrain.sample(xy), terrain2.sample(xy))
     assert meta["map_version"] == 2 and meta["scan"] == 7 and np.allclose(meta["pose"], p0)
+
+
+# points layer: mean points per scan, split by area, summed back on merge, NaN where unobserved
+def test_points_layer_density() -> None:
+    store = empty_store(0.2)
+    two = np.array([[0.05, 0.05, 0.0], [0.15, 0.15, 0.0]])
+    store = integrate_obs(store, scan_observation(two, 0.2, 10.0), np.array([np.nan]), 0.0, PARAMS)
+    assert store.points[0] == pytest.approx(2.0)
+    four = np.vstack([two, two])
+    store = integrate_obs(store, scan_observation(four, 0.2, 10.0), np.array([np.nan]), 0.1, PARAMS)
+    assert store.points[0] == pytest.approx(3.0)  # mean of 2 and 4 points per scan
+    kids = split_into_children(store, 0.1)
+    assert kids.points == pytest.approx(np.full(4, 0.75))
+    back = merge_children(empty_store(0.2), kids)
+    assert back.points[0] == pytest.approx(3.0)
+    rng = np.random.default_rng(seed=44)
+    m = TemporalFoveatedMap(BANDS, PARAMS)
+    p0 = pose(0.0, 0.0)
+    m.integrate(to_velo(road(rng, 0.0, 0.0), p0), p0, t=0.0)
+    fov = m.render()
+    pts = fov.sample(np.array([[1.0, 1.0], [30.0, 0.0]]), "points")
+    assert pts[0] >= 1 and np.isnan(pts[1])

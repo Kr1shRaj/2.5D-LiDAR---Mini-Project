@@ -18,10 +18,13 @@ Two roles, one boundary. Each side may change its own internals freely as long a
 - Band choice at a spot = the ring holding that spot's range from the sensor (`FoveatedLayers.lookup`).
 - Layer names:
   - core: `count`, `z_min`, `z_max`, `z_mean`, `z_var`, `ground`
-  - extra: `weight`, `logodds`, `last_seen`, `inherited`
+  - extra: `weight`, `logodds`, `last_seen`, `inherited`, `points` (map v3+)
   - plus `resolution` through the feature sampler
 - **Layers are only added, never renamed or removed.** New layer = new map version.
 - `count` in the fused map = scans that saw the cell, not points.
+- `points` (map v3+) = decayed weighted mean of points per scan in the cell. Divide by `resolution**2` for density per m².
+  - Inherited children get the parent value scaled by area.
+  - A merged parent gets the sum of its children, but never less than what it already had.
 - `TemporalFoveatedMap.terrain`: local terrain of the latest scan, `Terrain.sample(xy)`, NaN where none.
 - `src.config.MAP_VERSION`: bumped whenever fusion or hand-off changes what `render()` returns.
 
@@ -29,6 +32,7 @@ Two roles, one boundary. Each side may change its own internals freely as long a
 |---|---|
 | 1 | Phases 3–5: centre-based ring hand-off. Seam gaps just past ring edges. |
 | 2 | Edge-strip cells kept in both bands (copy when missing, removed only when wholly on the other side). Each band also ingests points one own-cell diagonal past its edges, for cells touching its ring. No seam gap. |
+| 3 | v2 + `points` layer. |
 
 ## 2. Snapshots (frozen map for model work)
 
