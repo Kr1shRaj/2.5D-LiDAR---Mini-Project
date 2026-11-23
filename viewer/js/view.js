@@ -115,3 +115,18 @@ export function nearGround(fr, nan) {
   const g = fr.bands[0].cols.ground.filter((v) => v !== nan).sort();
   return g.length ? g[g.length >> 1] : 0;
 }
+
+// centreline of one candidate arc in world xy. arc built in velodyne frame (x fwd, y left):
+//   x = sin(k s) / k, y = (1 - cos(k s)) / k  (straight when k = 0), then turned by pose yaw, shifted by pose xy.
+// top-down only: velodyne roll / pitch ignored for drawing (export scored arcs with full pose).
+export function arcWorld(k, len, step, pose) {
+  const [px, py, , yaw] = pose, co = Math.cos(yaw), si = Math.sin(yaw), pts = [];
+  for (let s = 0; s <= len + 1e-9; s += step) {
+    const x = Math.abs(k) < 1e-9 ? s : Math.sin(k * s) / k;
+    const y = Math.abs(k) < 1e-9 ? 0 : (1 - Math.cos(k * s)) / k;
+    pts.push([px + co * x - si * y, py + si * x + co * y]);
+  }
+  return pts;
+}
+
+export const VERDICT_COLORS = ['#3fb950', '#f0883e', '#f85149'];  // clear, caution, blocked

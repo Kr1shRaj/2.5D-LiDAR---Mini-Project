@@ -38,8 +38,10 @@ def main() -> None:
         fov = m.render()
         labeler.update(fov, m.terrain, float(t))
         t0 = time.perf_counter()
-        # arcs stay inside 20 m < model zone: every observed probe has a model label, -1 = unobserved
-        r = check_corridor(lambda xy: labeler.labels_at(fov, xy), pose, CP, prev)
+        # arcs stay inside 20 m < model zone: every observed probe has a model label, -1 = unobserved.
+        # obstacle counts only with map evidence (log-odds > 0)
+        r = check_corridor(lambda xy: labeler.labels_at(fov, xy), pose, CP, prev,
+                           lambda xy: np.nan_to_num(fov.sample(xy, "logodds")) > 0)
         ms.append((time.perf_counter() - t0) * 1e3)
         prev = r.curvatures[r.pick] if r.pick >= 0 else None
         rows.append({"i": i, "scan": ids[i], "verdict": r.verdict.tolist(), "block_m": r.block_m.round(2).tolist(),

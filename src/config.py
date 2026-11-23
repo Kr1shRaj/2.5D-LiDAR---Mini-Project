@@ -2,7 +2,7 @@ from src.mapping.foveated_grid import Band
 
 # phase 1 params. team picked these. all velodyne frame.
 GROUND_PERCENTILE = 10.0
-EGO_BOX_VELO = (-1.2, 1.6, -0.9, 0.9, -1.8, 0.0)  # x_min, x_max, y_min, y_max, z_min, z_max [m]
+EGO_BOX_VELO = (-1.2, 2.8, -0.9, 0.9, -1.8, 0.0)  # x_min, x_max, y_min, y_max, z_min, z_max [m]. x_max 1.6 -> 2.8 (map v4): car body points at x 2.5-2.6, y +-0.5, z -0.9 in 93 % of scans
 RANGE_MIN_M = 2.0
 RANGE_MAX_M = 50.0
 
@@ -16,7 +16,8 @@ FOVEATED_BANDS = (
 # fused map output version. bump when fusion / hand-off changes what render() returns.
 # v1 = phases 3-5 (centre-based ring hand-off, seam gaps). v2 = edge strip kept in both bands, no seam.
 # v3 = v2 + `points` layer (mean points per scan in cell).
-MAP_VERSION = 3
+# v4 = v3 + ego box x_max 2.8 m: recording-car body points no longer leave obstacle trail along driven path.
+MAP_VERSION = 4
 
 # phase 3 temporal fusion. first-pick values, tune on data. log-odds = octomap defaults (p 0.7 hit, 0.4 miss).
 TEMPORAL_TAU_S = 3.0  # stale decay time constant

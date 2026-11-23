@@ -94,3 +94,13 @@ def test_lone_obstacle_probe_ignored_cluster_blocks() -> None:
     cone = world_labels([(5.0, 5.4, -0.2, 0.2, OBSTACLE)])
     r = check_corridor(cone, pose(0.0, 0.0), P)
     assert r.verdict[STRAIGHT] == BLOCKED and r.block_m[STRAIGHT] == pytest.approx(5.0, abs=0.25)
+
+
+# obstacle label without map evidence downgrades to caution, never blocks
+def test_obstacle_needs_map_evidence() -> None:
+    cone = world_labels([(5.0, 5.4, -0.2, 0.2, OBSTACLE)])
+    free = lambda xy: np.zeros(len(xy), dtype=bool)
+    r = check_corridor(cone, pose(0.0, 0.0), P, occupied_at=free)
+    assert r.verdict[STRAIGHT] != BLOCKED and r.hazard[STRAIGHT] > 0
+    occ = lambda xy: np.ones(len(xy), dtype=bool)
+    assert check_corridor(cone, pose(0.0, 0.0), P, occupied_at=occ).verdict[STRAIGHT] == BLOCKED

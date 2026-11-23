@@ -30,7 +30,11 @@
     <label><input type="checkbox" id="rings" checked> Rings</label>
     <label><input type="checkbox" id="path" checked> Path</label>
     <label><input type="checkbox" id="car" checked> Car</label>
+    <label><input type="checkbox" id="corridor" checked> Corridor</label>
   </span>
+  <label>Events
+    <select id="events" title="Frames where straight arc is blocked and another arc is a candidate"></select>
+  </label>
 </header>
 
 <main>
@@ -61,6 +65,7 @@
       <div class="kv">
         <span>Map (integrate + render)</span><b id="h-map" class="mono"></b>
         <span>Hazard labeler</span><b id="h-label" class="mono"></b>
+        <span>Corridor check</span><b id="h-cor" class="mono"></b>
         <span>Total</span><b id="h-total" class="mono"></b>
       </div>
       <canvas id="spark" height="56" title="Total ms per scan. Click to seek."></canvas>
@@ -78,6 +83,12 @@
       <div id="h-classes" class="kv"></div>
     </section>
     <section>
+      <h2>Corridor check <span class="muted small">candidate only</span></h2>
+      <div id="h-corridor" class="kv"></div>
+      <p class="small muted">Arcs: green clear · orange caution · red blocked (✕ = first obstacle cluster).
+        Cyan = picked candidate. Dashed white = path the driver really took next. Nothing is steered.</p>
+    </section>
+    <section>
       <h2>Cell inspector</h2>
       <div id="inspect" class="kv"><span class="muted small">Click map to pin a spot. Pin stays on same world spot while scans play.</span></div>
     </section>
@@ -85,7 +96,7 @@
       <p>Replay: <b id="h-fps" class="mono">–</b> frames/s in browser. Browser replay speed is not pipeline speed.</p>
       <p id="h-cpu"></p>
       <p>Candidate hazard labels from geometry and a small model. Not collision prediction. Research prototype.</p>
-      <p>Keys: space play · ←/→ step · shift ±10 · 1–4 fill · V view · R reset.</p>
+      <p>Keys: space play · ←/→ step · shift ±10 · 1–4 fill · V view · R reset · N/P next/prev event.</p>
     </section>
   </aside>
 </main>

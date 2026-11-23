@@ -18,6 +18,7 @@ VERDICTS = ["clear", "caution", "blocked"]
 NO_LABEL = -1  # label_at answer for unobserved spot / outside map: counts as unknown, never as free
 
 LabelAt = Callable[[np.ndarray], np.ndarray]
+OccupiedAt = Callable[[np.ndarray], np.ndarray]  # xy -> bool, map's own obstacle evidence (log-odds > 0)
 
 
 # knobs for arc fan, footprint and verdicts. lengths in metres, curvature in 1/m.
@@ -115,9 +116,21 @@ def score_arcs(labels: np.ndarray, p: CorridorParams, prev_curvature: float | No
                           score=score, pick=pick)
 
 
-# full check for one scan: arcs -> world -> labels via label_at -> verdicts + pick
+# obstacle label without map evidence -> hazardous (caution, not block). label alone over-fires on flat road.
+def confirm_obstacles(labels: np.ndarray, occupied: np.ndarray) -> np.ndarray:
+    return np.where((labels == OBSTACLE) & ~occupied, HAZARDOUS, labels)
+
+
+# full check for one scan: arcs -> world -> labels via label_at (+ evidence via occupied_at) -> verdicts + pick
 def check_corridor(label_at: LabelAt, t_world_velo: np.ndarray, p: CorridorParams,
-                   prev_curvature: float | None = None) -> CorridorResult:
+                   prev_curvature: float | None = None, occupied_at: OccupiedAt | None = None) -> CorridorResult:
     probes = probes_to_world(arc_probes_velo(p), t_world_velo)
-    labels = label_at(probes.reshape(-1, 2)).reshape(probes.shape[:3])
-    return score_arcs(labels, p, prev_curvature)
+    flat = probes.reshape(-1, 2)
+    labels = label_at(flat)
+    if occupied_at is not None:
+        # evidence only needed where label says obstacle (few % of probes): one small lookup
+        ob = np.flatnonzero(labels == OBSTACLE)
+        occ = np.ones(len(flat), dtype=bool)
+        occ[ob] = occupied_at(flat[ob])
+        labels = confirm_obstacles(labels, occ)
+    return score_arcs(labels.reshape(probes.shape[:3]), p, prev_curvature)

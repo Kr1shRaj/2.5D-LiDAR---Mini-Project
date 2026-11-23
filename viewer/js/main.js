@@ -1,6 +1,6 @@
 // app: timeline, view state, input, HUD, inspector. reads replay files only, never calls python.
 import { FrameStore, loadManifest, slotOf, value } from './data.js';
-import { CLASS_COLORS, FILLS, bandImage, legendHtml, nearGround, screenToWorld, worldToScreen } from './view.js';
+import { CLASS_COLORS, FILLS, VERDICT_COLORS, arcWorld, bandImage, legendHtml, nearGround, screenToWorld, worldToScreen } from './view.js';
 
 const DEFAULT_REPLAY = '../outputs/replay/08_1500-1799/';
 const PREFETCH = 24;
@@ -102,6 +102,7 @@ function draw() {
     }
     g.setLineDash([]);
   }
+  if ($('corridor').checked && man.corridor && fr.meta.corridor) drawCorridor(g, fr.meta, lw);
   if ($('car').checked) {
     const [x, y, , yaw] = fr.meta.pose, [x0, x1, y0, y1] = man.ego_box_velo;
     const co = Math.cos(yaw), si = Math.sin(yaw);
@@ -156,6 +157,116 @@ function draw() {
   }
 }
 
+// total pipeline ms of frame (corridor only in replays that have it)
+const totalMs = (f) => f.map_ms + f.label_ms + (f.corridor_ms ?? 0);
+
+// world-space corridor overlay: driven path next 20 m, 15 arcs coloured by verdict, picked arc in cyan
+function drawCorridor(g, meta, lw) {
+  const c = man.corridor, cor = meta.corridor, step = 0.5;
+  // path the driver really took next (poses), up to arc length along path
+  const P = man.frames.map((f) => f.pose);
+  g.beginPath();
+  let along = 0;
+  g.moveTo(P[meta.i][0], P[meta.i][1]);
+  for (let j = meta.i + 1; j < P.length && along < c.length_m; j++) {
+    along += Math.hypot(P[j][0] - P[j - 1][0], P[j][1] - P[j - 1][1]);
+    g.lineTo(P[j][0], P[j][1]);
+  }
+  g.setLineDash([lw(6), lw(5)]);
+  g.strokeStyle = '#ffffff';
+  g.lineWidth = lw(2);
+  g.stroke();
+  g.setLineDash([]);
+  c.curvatures.forEach((k, a) => {
+    if (a === cor.pick) return;
+    const pts = arcWorld(k, c.length_m, step, meta.pose), cut = Math.round(cor.b[a] / step);
+    const color = VERDICT_COLORS[cor.v[a]];
+    // solid up to first obstacle cluster, faded after
+    for (const [from, to, alpha] of [[0, cut + 1, 0.95], [cut, pts.length, 0.2]]) {
+      if (to - from < 2) continue;
+      g.beginPath();
+      pts.slice(from, to).forEach(([x, y], j) => (j ? g.lineTo(x, y) : g.moveTo(x, y)));
+      g.globalAlpha = alpha;
+      g.strokeStyle = color;
+      g.lineWidth = lw(2);
+      g.stroke();
+    }
+    g.globalAlpha = 1;
+    if (cor.v[a] === 2 && cut < pts.length) {
+      const [x, y] = pts[cut], r = lw(6);
+      g.beginPath();
+      g.moveTo(x - r, y - r); g.lineTo(x + r, y + r);
+      g.moveTo(x - r, y + r); g.lineTo(x + r, y - r);
+      g.strokeStyle = '#f85149';
+      g.lineWidth = lw(3);
+      g.stroke();
+    }
+  });
+  if (cor.pick >= 0) {
+    const pts = arcWorld(c.curvatures[cor.pick], c.length_m, step, meta.pose);
+    const line = () => { g.beginPath(); pts.forEach(([x, y], j) => (j ? g.lineTo(x, y) : g.moveTo(x, y))); };
+    line();
+    g.globalAlpha = 0.25;
+    g.strokeStyle = '#39d0f0';
+    g.lineWidth = 2 * c.half_width_m;  // footprint band, world metres
+    g.lineCap = 'round';
+    g.stroke();
+    g.globalAlpha = 1;
+    line();
+    g.lineWidth = lw(3);
+    g.stroke();
+    g.lineCap = 'butt';
+    // arrow head at tip, along last segment
+    const [x1, y1] = pts.at(-1), [x0, y0] = pts.at(-2), ang = Math.atan2(y1 - y0, x1 - x0), h = lw(14);
+    g.beginPath();
+    g.moveTo(x1, y1);
+    g.lineTo(x1 - h * Math.cos(ang - 0.45), y1 - h * Math.sin(ang - 0.45));
+    g.lineTo(x1 - h * Math.cos(ang + 0.45), y1 - h * Math.sin(ang + 0.45));
+    g.closePath();
+    g.fillStyle = '#39d0f0';
+    g.fill();
+  }
+}
+
+// corridor HUD rows: straight verdict, picked candidate, verdict counts
+function corridorHud(meta) {
+  const el = $('h-corridor');
+  if (!man.corridor || !meta.corridor) {
+    el.innerHTML = '<span class="muted small">No corridor data in this replay. Re-export.</span>';
+    return;
+  }
+  const c = man.corridor, cor = meta.corridor, s = c.straight, row = (k, v) => `<span>${k}</span><b class="mono">${v}</b>`;
+  const desc = (a) => {
+    const k = c.curvatures[a];
+    return Math.abs(k) < 1e-9 ? 'straight' : `${k > 0 ? 'left' : 'right'}, R ${Math.abs(1 / k).toFixed(0)} m`;
+  };
+  const st = c.verdicts[cor.v[s]].toUpperCase();
+  let h = row('Straight', cor.v[s] === 2 ? `${st} at ${cor.b[s].toFixed(1)} m` : st);
+  h += row('Candidate', cor.pick >= 0 ? `${desc(cor.pick)} · ${c.verdicts[cor.v[cor.pick]]}` : 'NO CLEAR CANDIDATE');
+  if (cor.pick >= 0) {
+    h += row('Candidate clear length', `${cor.b[cor.pick].toFixed(1)} m`);
+    h += row('Candidate unknown / hazard', `${(cor.u[cor.pick] * 100).toFixed(0)} % / ${(cor.h[cor.pick] * 100).toFixed(0)} %`);
+  }
+  const n = [0, 1, 2].map((v) => cor.v.filter((x) => x === v).length);
+  h += row('Arcs clear / caution / blocked', `${n[0]} / ${n[1]} / ${n[2]}`);
+  el.innerHTML = h;
+}
+
+// fill event bookmark menu from manifest
+function fillEvents() {
+  const sel = $('events'), ev = man.corridor?.events ?? [];
+  sel.innerHTML = `<option value="">${ev.length ? `${ev.length} corridor events` : 'no events'}</option>` +
+    ev.map((i) => `<option value="${i}">frame ${i + 1} · scan ${man.frames[i].scan}</option>`).join('');
+  sel.onchange = (e) => { if (e.target.value !== '') { setPlaying(false); seek(+e.target.value); } };
+}
+
+// jump to next / previous corridor event
+function stepEvent(dir) {
+  const ev = man.corridor?.events ?? [];
+  const next = dir > 0 ? ev.find((i) => i > st.i) : [...ev].reverse().find((i) => i < st.i);
+  if (next !== undefined) { setPlaying(false); seek(next); $('events').value = String(next); }
+}
+
 // cell under world xy: band by range from sensor (same rule as FoveatedLayers.lookup), then lattice cell
 function cellAt(fr, x, y) {
   const [cx, cy] = fr.meta.center, r = Math.hypot(x - cx, y - cy);
@@ -208,12 +319,14 @@ function inspect() {
 
 // HUD numbers for frame meta
 function hud(meta) {
-  const tot = meta.map_ms + meta.label_ms;
+  const tot = totalMs(meta);
   $('frameno').textContent = `${meta.i + 1}/${man.frames.length} · scan ${meta.scan} · ${(meta.t - man.frames[0].t).toFixed(1)} s`;
   $('h-map').textContent = `${meta.map_ms.toFixed(1)} ms`;
   $('h-label').textContent = `${meta.label_ms.toFixed(1)} ms`;
   $('h-total').textContent = `${tot.toFixed(1)} ms`;
   $('h-total').classList.toggle('over', tot > 100);
+  $('h-cor').textContent = meta.corridor_ms !== undefined ? `${meta.corridor_ms.toFixed(1)} ms` : '–';
+  corridorHud(meta);
   $('h-store').textContent = `${meta.store_mb.toFixed(2)} MB`;
   $('h-render').textContent = `${meta.render_mb.toFixed(2)} MB`;
   $('h-labelled').textContent = meta.labelled.toLocaleString();
@@ -231,7 +344,7 @@ function hud(meta) {
 // sparkline of total ms per scan, 100 ms budget line, current frame marker
 function spark() {
   const cv = $('spark'), g = cv.getContext('2d'), { dpr, W, H } = fitCanvas(cv);
-  const tot = man.frames.map((f) => f.map_ms + f.label_ms), hi = Math.max(120, ...tot);
+  const tot = man.frames.map(totalMs), hi = Math.max(120, ...tot);
   const x = (k) => (k / (tot.length - 1)) * W, y = (v) => H - (v / hi) * (H - 4);
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, W, H);
@@ -375,7 +488,7 @@ function bindInput() {
     st.panX = st.panY = 0;
     st.dirty = true;
   };
-  for (const id of ['rings', 'path', 'car']) $(id).onchange = () => { st.dirty = true; };
+  for (const id of ['rings', 'path', 'car', 'corridor']) $(id).onchange = () => { st.dirty = true; };
   $('spark').onclick = (e) => {
     const r = e.target.getBoundingClientRect();
     setPlaying(false);
@@ -396,6 +509,8 @@ function bindInput() {
       $('viewmode').value = modes[(modes.indexOf(st.mode) + 1) % modes.length];
       $('viewmode').onchange({ target: $('viewmode') });
     } else if (e.key === 'r' || e.key === 'R') resetView();
+    else if (e.key === 'n' || e.key === 'N') stepEvent(1);
+    else if (e.key === 'p' || e.key === 'P') stepEvent(-1);
   });
 }
 
@@ -423,6 +538,7 @@ async function main() {
   $('h-summary').textContent = `Whole replay (scans 2+): median ${man.timing.total_ms_median} ms, p95 ${man.timing.total_ms_p95} ms, ` +
     `${(man.timing.over_100ms_share * 100).toFixed(1)}% of scans over 100 ms budget.`;
   $('scrub').max = man.frames.length - 1;
+  fillEvents();
   $('legend').innerHTML = legendHtml(st.fill, man.classes);
   bindInput();
   resetView();
