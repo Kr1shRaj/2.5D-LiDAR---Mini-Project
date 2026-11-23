@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -271,14 +273,16 @@ def test_snapshot_round_trip(tmp_path) -> None:
     from src.temporal.snapshot import load_snapshot, save_snapshot
 
     rng = np.random.default_rng(seed=43)
-    m = TemporalFoveatedMap(BANDS, PARAMS)
+    m = TemporalFoveatedMap(BANDS, REFINE)
     p0 = pose(1.0, -2.0, 0.3)
-    m.integrate(to_velo(road(rng, 1.0, -2.0), p0), p0, t=0.0)
+    for i in range(3):
+        m.integrate(to_velo(curb_road(rng, 100000) + np.array([1.0, -2.0, 0.0]), p0), p0, t=0.1 * i)
     fov = m.render()
+    assert fov.bands[-1].overlay and fov.bands[-1].n_cells > 0
     save_snapshot(tmp_path / "s.npz", fov, m.terrain, {"map_version": 2, "scan": 7, "pose": p0})
     fov2, terrain2, meta = load_snapshot(tmp_path / "s.npz")
     xy = np.array(fov.center) + rng.uniform(-22, 22, (5000, 2))
-    names = ["z_max", "ground", "count", "weight", "logodds", "inherited", "last_seen"]
+    names = ["z_max", "ground", "count", "weight", "logodds", "inherited", "last_seen", "resolution"]
     a, b = fov.sample_many(xy, names), fov2.sample_many(xy, names)
     for n in names:
         np.testing.assert_array_equal(a[n], b[n])
@@ -307,3 +311,74 @@ def test_points_layer_density() -> None:
     fov = m.render()
     pts = fov.sample(np.array([[1.0, 1.0], [30.0, 0.0]]), "points")
     assert pts[0] >= 1 and np.isnan(pts[1])
+
+
+REFINE = replace(PARAMS, refine_res=0.2, refine_step=0.08, refine_std=0.08, refine_std_max=0.3, refine_patch=1,
+                 refine_hold_s=0.5, refine_min_weight=2.0, refine_on_obstacle=False)
+
+
+# flat road with 15 cm curb at world x >= 15 (outer ring 12-20 m), dense enough for 20 cm cells
+def curb_road(rng: np.random.Generator, n: int = 200000) -> np.ndarray:
+    pts = road(rng, 0.0, 0.0, n)
+    pts[pts[:, 0] >= 15.0, 2] += 0.15
+    return pts
+
+
+# curb in outer ring opens a 20 cm patch; lookup there serves the fine cell and sees the sharp step
+def test_refinement_patch_opens_on_curb() -> None:
+    rng = np.random.default_rng(seed=51)
+    m = TemporalFoveatedMap(BANDS, REFINE)
+    p0 = pose(0.0, 0.0)
+    for i in range(4):
+        m.integrate(to_velo(curb_road(rng), p0), p0, t=0.1 * i)
+    assert m.ref_keys.size > 0 and m.fine.size > 0
+    fov = m.render()
+    assert fov.bands[-1].overlay and fov.bands[-1].band.resolution == pytest.approx(0.2)
+    xy = np.array([[14.9, 0.3], [15.1, 0.3]])  # 20 cm apart across curb
+    res = fov.sample(xy, "resolution")
+    assert np.allclose(res, 0.2)  # fine patch answers, not 50 cm base
+    g = fov.sample(xy, "ground")
+    assert g[1] - g[0] == pytest.approx(0.15, abs=0.03)
+    # far from any cue: base 50 cm cell still answers
+    assert fov.sample(np.array([[0.0, 16.0]]), "resolution")[0] == pytest.approx(0.5)
+
+
+# patch layer is a copy over the base: base outer store keeps all data, weights never double
+def test_refinement_never_double_counts_and_expires() -> None:
+    rng = np.random.default_rng(seed=52)
+    m = TemporalFoveatedMap(BANDS, REFINE)
+    p0 = pose(0.0, 0.0)
+    for i in range(6):
+        m.integrate(to_velo(curb_road(rng), p0), p0, t=0.1 * i)
+    bound = 1.0 / (1.0 - np.exp(-0.1 / PARAMS.tau_s))
+    assert max(s.weight.max() for s in [*m.stores, m.fine]) <= bound + 1e-6
+    base_cells = m.stores[-1].size
+    for i in range(6, 20):  # no new points: no cues, patch ages out after hold
+        m.integrate(np.empty((0, 3)), p0, t=0.1 * i)
+    assert m.ref_keys.size == 0 and m.fine.size == 0
+    assert m.stores[-1].size == base_cells  # base outer ring untouched by patch expiry
+    assert fov_res(m, [[15.1, 0.3]]) == pytest.approx(0.5)
+
+
+# resolution served at xy after render
+def fov_res(m: TemporalFoveatedMap, xy: list) -> float:
+    return float(m.render().sample(np.array(xy), "resolution")[0])
+
+
+# budget caps refined outer cells
+def test_refinement_budget_cap() -> None:
+    rng = np.random.default_rng(seed=53)
+    m = TemporalFoveatedMap(BANDS, replace(REFINE, refine_budget=10))
+    p0 = pose(0.0, 0.0)
+    for i in range(4):
+        m.integrate(to_velo(curb_road(rng), p0), p0, t=0.1 * i)
+    assert 0 < m.ref_keys.size <= 10
+
+
+# refinement off: no patch band, plain rings only
+def test_refinement_off_has_no_overlay() -> None:
+    rng = np.random.default_rng(seed=54)
+    m = TemporalFoveatedMap(BANDS, PARAMS)
+    p0 = pose(0.0, 0.0)
+    m.integrate(to_velo(curb_road(rng, 50000), p0), p0, t=0.0)
+    assert not any(b.overlay for b in m.render().bands) and m.fine.size == 0

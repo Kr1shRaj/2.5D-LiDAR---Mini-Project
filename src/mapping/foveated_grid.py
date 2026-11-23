@@ -66,6 +66,7 @@ class BandLayers:
     z_var: np.ndarray
     ground: np.ndarray
     extra: dict[str, np.ndarray] = field(default_factory=dict)  # optional layers, e.g. fused confidence
+    overlay: bool = False  # True = finer patch layer over a base band's ring; wins where its cell is observed
     _index: np.ndarray | None = field(default=None, repr=False, compare=False)
 
     # dense [flat cell] -> compact index map, -1 = cell outside annulus. built once, O(1) lookups after.
@@ -116,16 +117,20 @@ class FoveatedLayers:
         return sum(b.n_cells for b in self.bands)
 
     # find (band index, compact cell index) for query xy. -1 = outside every band.
+    # base band by query range; then overlay band (refined patch) replaces it where overlay cell is observed.
     def lookup(self, xy: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         r = np.hypot(xy[:, 0] - self.center[0], xy[:, 1] - self.center[1])
         band_idx = np.full(len(xy), -1, dtype=np.int64)
         cell_idx = np.full(len(xy), -1, dtype=np.int64)
-        for k, bl in enumerate(self.bands):
+        for k in sorted(range(len(self.bands)), key=lambda k: self.bands[k].overlay):
+            bl = self.bands[k]
             sel = np.flatnonzero((r >= bl.band.r_min) & (r < bl.band.r_max))
             ix, iy, valid = point_to_cell(xy[sel], bl.spec)
             sel, flat = sel[valid], ix[valid] * bl.spec.ny + iy[valid]
             pos = bl.index_map()[flat]
             hit = pos >= 0
+            if bl.overlay:
+                hit[hit] = bl.count[pos[hit]] > 0
             band_idx[sel[hit]] = k
             cell_idx[sel[hit]] = pos[hit]
         return band_idx, cell_idx

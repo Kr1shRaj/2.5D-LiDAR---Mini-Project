@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.ndimage import minimum_filter
 
-from src.mapping.uniform_grid import GridSpec, build_uniform_grid, spec_from_bounds
+from src.mapping.uniform_grid import GridSpec, cell_stats_sparse, point_to_cell, spec_from_bounds
 
 
 # coarse ground under one scan. big cells so car roofs do not count as ground.
@@ -37,7 +37,15 @@ def local_terrain(
         lo, hi = points[:, :2].min(axis=0), points[:, :2].max(axis=0)
         bounds = (lo[0], hi[0] + 1e-6, lo[1], hi[1] + 1e-6)
     spec = spec_from_bounds(*bounds, cell, frame=frame)
-    g = build_uniform_grid(points, spec, points_frame=frame, ground_percentile=ground_percentile).ground
+    if spec.frame != frame:
+        raise ValueError(f"points in frame {frame!r} but grid in frame {spec.frame!r}")
+    # sparse kernel: only occupied cells sorted, same percentile as build_uniform_grid ground layer
+    ix, iy, valid = point_to_cell(points[:, :2], spec)
+    ids, _, _, _, _, _, ground = cell_stats_sparse(ix[valid] * spec.ny + iy[valid], points[valid, 2].astype(np.float64),
+                                                   ground_percentile)
+    g = np.full(spec.nx * spec.ny, np.nan)
+    g[ids] = ground
+    g = g.reshape(spec.shape)
     low = minimum_filter(np.where(np.isnan(g), np.inf, g), size=3, mode="constant", cval=np.inf)
     return Terrain(spec=spec, z=np.where(np.isinf(low), np.nan, low))
 

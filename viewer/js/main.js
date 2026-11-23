@@ -67,8 +67,10 @@ function draw() {
   g.imageSmoothingEnabled = false;  // pixel sharp: 10 cm vs 50 cm cells stay visible
   const imgs = (fr.images[st.fill] ??= fr.bands.map((b) => bandImage(b, st.fill, fillCtx(fr))));
   const [cx, cy] = fr.meta.center;
-  // each band clipped to own ring: every spot shows the cell FoveatedLayers.lookup returns there
-  for (let k = fr.bands.length - 1; k >= 0; k--) {
+  // each band clipped to own ring: every spot shows the cell FoveatedLayers.lookup returns there.
+  // base rings far to near, then refined-patch overlays on top (overlay wins where it has a cell)
+  const order = fr.bands.map((b, k) => k).sort((a, b) => (fr.bands[a].overlay - fr.bands[b].overlay) || (b - a));
+  for (const k of order) {
     const b = fr.bands[k];
     g.save();
     g.beginPath();
@@ -93,7 +95,7 @@ function draw() {
   }
   if ($('rings').checked) {
     g.setLineDash([lw(6), lw(4)]);
-    for (const b of man.bands) {
+    for (const b of man.bands.filter((b) => !b.overlay)) {
       g.beginPath();
       g.arc(cx, cy, b.r_max, 0, 2 * Math.PI);
       g.strokeStyle = 'rgba(230,237,243,0.7)';
@@ -126,7 +128,7 @@ function draw() {
   g.font = '12px system-ui, sans-serif';
   if ($('rings').checked) {
     const cu = M[0] * cx + M[2] * cy + M[4], cv2 = M[1] * cx + M[3] * cy + M[5];
-    man.bands.forEach((b) => {
+    man.bands.filter((b) => !b.overlay).forEach((b) => {
       const zone = Math.abs(b.r_max - man.zone_m) < 1e-6 ? ' · model zone edge' : '';
       const t = `${b.r_max} m · inside: ${Math.round(b.resolution * 100)} cm cells${zone}`;
       g.fillStyle = 'rgba(13,17,23,0.75)';
@@ -283,10 +285,18 @@ function stepEvent(dir) {
   if (next !== undefined) { setPlaying(false); seek(next); $('events').value = String(next); focusCorridor(); }
 }
 
-// cell under world xy: band by range from sensor (same rule as FoveatedLayers.lookup), then lattice cell
+// cell under world xy: refined-patch overlay if it has an observed cell there, else base band by range
+// from sensor (same rule as FoveatedLayers.lookup), then lattice cell
 function cellAt(fr, x, y) {
   const [cx, cy] = fr.meta.center, r = Math.hypot(x - cx, y - cy);
-  const k = fr.bands.findIndex((b) => r >= b.r_min && r < b.r_max);
+  for (const [k, b] of fr.bands.entries()) {
+    if (!b.overlay || r < b.r_min || r >= b.r_max) continue;
+    const ix = Math.floor((x - b.x_min) / b.res), iy = Math.floor((y - b.y_min) / b.res);
+    if (ix < 0 || iy < 0 || ix >= b.nx || iy >= b.ny) continue;
+    const j = slotOf(b, ix * b.ny + iy);
+    if (j >= 0) return { r, k, b, ix, iy, j };
+  }
+  const k = fr.bands.findIndex((b) => !b.overlay && r >= b.r_min && r < b.r_max);
   if (k < 0) return { r, k };
   const b = fr.bands[k], ix = Math.floor((x - b.x_min) / b.res), iy = Math.floor((y - b.y_min) / b.res);
   if (ix < 0 || iy < 0 || ix >= b.nx || iy >= b.ny) return { r, k };
@@ -307,7 +317,7 @@ function inspect() {
     return;
   }
   const b = c.b, res = b.res;
-  h += row('Ring', `${b.r_min}–${b.r_max} m, ${Math.round(res * 100)} cm cells`);
+  h += row('Ring', `${b.r_min}–${b.r_max} m, ${Math.round(res * 100)} cm cells${b.overlay ? ' (refined hazard patch)' : ''}`);
   h += row('Cell centre (world)', `${(b.x_min + (c.ix + 0.5) * res).toFixed(2)}, ${(b.y_min + (c.iy + 0.5) * res).toFixed(2)}`);
   if (c.j < 0) {
     el.innerHTML = h + row('State', 'unobserved — no data') +
@@ -349,7 +359,8 @@ function hud(meta) {
   $('h-occ').textContent = meta.occupied.toLocaleString();
   $('h-bands').innerHTML = meta.bands.map((b, k) => {
     const s = man.bands[k];
-    return `<span>Observed cells ${s.r_min}–${s.r_max} m (${Math.round(s.resolution * 100)} cm)</span><b class="mono">${b.n_obs.toLocaleString()}</b>`;
+    const what = s.overlay ? `Refined patch cells ${s.r_min}–${s.r_max} m` : `Observed cells ${s.r_min}–${s.r_max} m`;
+    return `<span>${what} (${Math.round(s.resolution * 100)} cm)</span><b class="mono">${b.n_obs.toLocaleString()}</b>`;
   }).join('');
   $('h-classes').innerHTML = meta.classes.map((n, k) =>
     `<span><span class="chip" style="background:${CLASS_COLORS[k]}"></span>${man.classes[k]} cells</span><b class="mono">${n.toLocaleString()}</b>`).join('');
@@ -413,7 +424,7 @@ function setPlaying(on) {
 // scale so outer ring fits view
 function resetView() {
   const cv = $('map');
-  st.s = Math.min(cv.clientWidth, cv.clientHeight) / (2 * (man.bands.at(-1).r_max + 3));
+  st.s = Math.min(cv.clientWidth, cv.clientHeight) / (2 * (Math.max(...man.bands.map((b) => b.r_max)) + 3));
   st.panX = st.panY = 0;
   if (st.mode === 'world') st.anchor = man.frames[st.i].pose.slice(0, 2);
   st.dirty = true;

@@ -28,6 +28,11 @@ PARAMS = FusionParams(
     tau_s=config.TEMPORAL_TAU_S, prune_weight=config.TEMPORAL_PRUNE_WEIGHT, obstacle_h=H,
     l_hit=config.LOGODDS_HIT, l_miss=config.LOGODDS_MISS, l_min=config.LOGODDS_MIN, l_max=config.LOGODDS_MAX,
     terrain_cell=config.TERRAIN_CELL_M, ground_percentile=config.GROUND_PERCENTILE,
+    refine_res=config.REFINE_RES_M, refine_step=config.REFINE_STEP_M, refine_std=config.REFINE_STD_M,
+    refine_std_max=config.REFINE_STD_MAX_M,
+    refine_on_obstacle=config.REFINE_ON_OBSTACLE, refine_patch=config.REFINE_PATCH_CELLS,
+    refine_hold_s=config.REFINE_HOLD_S, refine_min_weight=config.REFINE_MIN_WEIGHT,
+    refine_budget=config.REFINE_BUDGET_CELLS, refine_every=config.REFINE_EVERY_SCANS,
 )
 NO_SEED = FusionParams(**{**PARAMS.__dict__, "seed_children": False})
 

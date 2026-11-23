@@ -20,6 +20,11 @@ from src.temporal.terrain import Terrain, local_terrain
 # Hand-off out: fine cell reaching past its ring builds missing coarse parent (merged copy).
 # Hand-off in: coarse cell reaching into finer ring seeds missing fine children that copy parent
 # stats, flagged `inherited`. First real fine scan of child replaces copied stats.
+# Adaptive refinement (refine_res > 0): outer ring cell with hazard cue (step, z std, obstacle evidence)
+# opens a local patch on a finer `refine` lattice. Outer ring keeps ALL its own data (base layer never
+# loses history); patch cells are a second, finer layer: seeded from parent (inherited), then fed real
+# points. Patch expires after refine_hold_s without cue: fine cells dropped, coarse base still complete.
+# Patch cells crossing into the mid ring copy across when missing (same lattice), and back.
 
 KEY_SHIFT = 2**31
 
@@ -55,6 +60,16 @@ class FusionParams:
     ground_percentile: float
     clear_ghosts: bool = True  # False = naive max fusion, keeps every old z max
     seed_children: bool = True  # False = coarse cell entering finer ring stays hidden, fine cell starts empty
+    refine_res: float = 0.0  # adaptive refinement cell size in outer ring; 0 = off
+    refine_step: float = 0.08  # trigger: ground change to a 4-neighbour outer cell
+    refine_std: float = 0.08  # trigger: z std inside outer cell ...
+    refine_std_max: float = np.inf  # ... below this (walls / poles have metre-scale std: not a ground hazard)
+    refine_on_obstacle: bool = True  # trigger: obstacle evidence log-odds > 0
+    refine_patch: int = 1  # patch = trigger cell + this many outer cells around it
+    refine_hold_s: float = 1.0  # patch stays refined this long after last trigger
+    refine_min_weight: float = 0.0  # cue only from outer cells this confident (decayed scans), noise guard
+    refine_budget: int = 0  # max refined outer cells (0 = no cap). steps first, then rough, then obstacle
+    refine_every: int = 1  # run cue update + patch seeding every n-th scan (hold time covers the gap)
 
 
 # sparse cell layers for one band lattice. arrays line up with sorted unique keys.
@@ -98,6 +113,8 @@ def empty_store(resolution: float) -> CellStore:
 
 # keep only rows where mask true
 def store_take(store: CellStore, mask: np.ndarray) -> CellStore:
+    if mask.all():  # nothing dropped: no copy of 12 arrays (arrays are never edited in place)
+        return store
     return replace(store, **{n: getattr(store, n)[mask] for n in ARRAY_FIELDS})
 
 
@@ -161,12 +178,23 @@ def obs_take(obs: ScanObs, mask: np.ndarray) -> ScanObs:
 
 # fold one scan observation (weight 1 per cell) into store. terrain_z = local terrain under each obs cell.
 def integrate_obs(store: CellStore, obs: ScanObs, terrain_z: np.ndarray, t: float, params: FusionParams) -> CellStore:
-    keys = np.union1d(store.keys, obs.keys)
-    new = {n: np.full(keys.size, FILL[n], dtype=getattr(store, n).dtype) for n in ARRAY_FIELDS}
-    si = np.searchsorted(keys, store.keys)
+    # both key lists sorted: insert missing obs keys by searchsorted (no union sort). fresh arrays, input untouched.
+    pos = np.searchsorted(store.keys, obs.keys)
+    have = (pos < store.size) & (store.keys[np.minimum(pos, max(store.size - 1, 0))] == obs.keys) if store.size \
+        else np.zeros(obs.keys.size, dtype=bool)
+    at = pos[~have]
+    total = store.size + at.size
+    slot_new = at + np.arange(at.size)
+    old = np.ones(total, dtype=bool)
+    old[slot_new] = False
+    new = {}
     for n in ARRAY_FIELDS:
-        new[n][si] = getattr(store, n)
-    new["keys"] = keys
+        a = getattr(store, n)
+        out = np.empty(total, dtype=a.dtype)
+        out[old] = a
+        out[slot_new] = obs.keys[~have] if n == "keys" else FILL[n]
+        new[n] = out
+    keys = new["keys"]
     oi = np.searchsorted(keys, obs.keys)
 
     # inherited placeholder meets first real fine scan: forget copied stats, start fresh
@@ -265,15 +293,30 @@ def split_into_children(coarse: CellStore, fine_res: float) -> CellStore:
     return CellStore(resolution=fine_res, keys=keys[order], **{n: a[order] for n, a in out.items()})
 
 
-# add cells to store; key already in store keeps existing row (real data beats placeholder)
+# add cells to store; key already in store keeps existing row (real data beats placeholder).
+# both key arrays sorted: membership + merge by searchsorted, no isin / argsort.
 def add_missing(store: CellStore, extra: CellStore) -> CellStore:
-    new = store_take(extra, ~np.isin(extra.keys, store.keys))
-    if new.size == 0:
+    if extra.size == 0:
         return store
-    keys = np.concatenate([store.keys, new.keys])
-    order = np.argsort(keys)
-    return CellStore(resolution=store.resolution,
-                     **{n: np.concatenate([getattr(store, n), getattr(new, n)])[order] for n in ARRAY_FIELDS})
+    if store.size == 0:
+        return extra
+    pos = np.searchsorted(store.keys, extra.keys)
+    present = store.keys[np.minimum(pos, store.size - 1)] == extra.keys
+    if present.all():
+        return store
+    new, at = store_take(extra, ~present), pos[~present]
+    # slot of each new row in merged order: its insertion point + new rows before it
+    slot_new = at + np.arange(at.size)
+    keep = np.ones(store.size + new.size, dtype=bool)
+    keep[slot_new] = False
+    merged = {}
+    for n in ARRAY_FIELDS:
+        a, b = getattr(store, n), getattr(new, n)
+        out = np.empty(store.size + new.size, dtype=a.dtype)
+        out[keep] = a
+        out[slot_new] = b
+        merged[n] = out
+    return CellStore(resolution=store.resolution, **merged)
 
 
 # streaming foveated map. feed scans in time order with pose; render rings around latest sensor.
@@ -286,20 +329,125 @@ class TemporalFoveatedMap:
         self.t: float | None = None
         self.sensor_xy = np.zeros(2)
         self.terrain: Terrain | None = None  # local terrain of latest scan, reused by hazard labeler
+        far = self.bands[-1]
+        self.refine_on = params.refine_res > 0 and len(self.bands) > 1 and far.resolution > params.refine_res
+        self.fine = empty_store(params.refine_res if self.refine_on else 1.0)  # refined patch cells
+        self.ref_keys = np.empty(0, dtype=np.int64)  # refined outer cells (sorted keys) + until when
+        self.ref_until = np.empty(0)
+        self.ref_score = np.empty(0)
+        self._mid_out: CellStore | None = None
 
     @property
     def nbytes(self) -> int:
-        return sum(s.nbytes for s in self.stores)
+        return sum(s.nbytes for s in self.stores) + self.fine.nbytes + self.ref_keys.nbytes + self.ref_until.nbytes + self.ref_score.nbytes
 
     @property
     def n_cells(self) -> int:
-        return sum(s.size for s in self.stores)
+        return sum(s.size for s in self.stores) + self.fine.size
 
-    # near and far distance of each store cell square to sensor
-    def _square_dist(self, s: CellStore) -> tuple[np.ndarray, np.ndarray]:
-        d = np.abs(key_centers(s.keys, s.resolution) - self.sensor_xy)
-        near = np.maximum(d - s.resolution / 2, 0.0)
-        return np.hypot(near[:, 0], near[:, 1]), np.hypot(*(d + s.resolution / 2).T)
+    # keys of outer-ring parent cell holding each fine cell centre
+    def _parent_keys(self, s: CellStore) -> np.ndarray:
+        c = key_centers(s.keys, s.resolution)
+        res = self.bands[-1].resolution
+        return encode_keys(np.floor(c[:, 0] / res).astype(np.int64), np.floor(c[:, 1] / res).astype(np.int64))
+
+    # mask: fine cell's parent is a refined outer cell
+    def _in_patch(self, s: CellStore) -> np.ndarray:
+        if not s.size or not self.ref_keys.size:
+            return np.zeros(s.size, dtype=bool)
+        pk = self._parent_keys(s)
+        pos = np.minimum(np.searchsorted(self.ref_keys, pk), self.ref_keys.size - 1)
+        return self.ref_keys[pos] == pk
+
+    # patch hand-off: expire old patches; fine cells cross 25 m edge as copies (when missing); drop cells
+    # out of outer ring or out of any patch. outer base store untouched.
+    def _refine_handoff(self, t: float) -> None:
+        alive = self.ref_until >= t
+        self.ref_keys, self.ref_until, self.ref_score = self.ref_keys[alive], self.ref_until[alive], self.ref_score[alive]
+        mid, far = self.bands[-2], self.bands[-1]
+        same = np.isclose(mid.resolution, self.fine.resolution)
+        f = self.fine
+        if f.size:
+            near, fard = self._square_dist2(f)
+            if same:
+                self.stores[-2] = add_missing(self.stores[-2], store_take(f, near < mid.r_max ** 2))
+            self.fine = store_take(f, (fard >= mid.r_max ** 2) & (near < far.r_max ** 2) & self._in_patch(f))
+        cand = self._mid_out
+        if same and cand is not None and cand.size and self.ref_keys.size:
+            self.fine = add_missing(self.fine, store_take(cand, self._in_patch(cand)))
+
+    # hazard cues on outer ring -> refresh / open patches (3 x 3 around cue), seed new patches from parent
+    def _refine_update(self, t: float) -> None:
+        c, p = self.stores[-1], self.params
+        far = self.bands[-1]
+        if not c.size:
+            return
+        # only cells this scan touched: untouched cells have no new evidence, their patch ages out by hold time
+        sure = (c.weight >= p.refine_min_weight) & ~c.inherited & (c.last_seen == t)
+        # cue score: 3 = ground step (curb, pothole edge), 2 = rough cell, 1 = obstacle evidence. budget keeps best.
+        score = np.zeros(c.size)
+        if p.refine_on_obstacle:
+            score[c.logodds > 0] = 1.0
+        std = np.sqrt(c.m2 / np.maximum(c.weight, 1e-12))
+        score[(std >= p.refine_std) & (std < p.refine_std_max)] = 2.0
+        ix, iy = decode_keys(c.keys)
+        si = np.flatnonzero(sure)  # step check only between touched, confident cells
+        for dx, dy in ((1, 0), (0, 1)):
+            nk = encode_keys(ix[si] + dx, iy[si] + dy)
+            pos = np.minimum(np.searchsorted(c.keys, nk), c.size - 1)
+            nb = (c.keys[pos] == nk) & sure[pos]
+            a, b = si[nb], pos[nb]
+            jump = np.abs(c.ground[a] - c.ground[b]) >= p.refine_step
+            score[a[jump]] = 3.0
+            score[b[jump]] = 3.0  # both sides of the step
+        score[~sure] = 0.0
+        cue = score > 0
+        if not cue.any():
+            return
+        r = np.arange(-p.refine_patch, p.refine_patch + 1)
+        dx, dy = np.meshgrid(r, r, indexing="ij")
+        px = (ix[cue][:, None] + dx.ravel()[None, :]).ravel()
+        py = (iy[cue][:, None] + dy.ravel()[None, :]).ravel()
+        pscore = np.repeat(score[cue], dx.size)
+        # merge with live patches: per key best score, latest until
+        allk = np.concatenate([self.ref_keys, encode_keys(px, py)])
+        alls = np.concatenate([self.ref_score, pscore])
+        allu = np.concatenate([self.ref_until, np.full(px.size, t + p.refine_hold_s)])
+        order = np.argsort(allk, kind="stable")
+        ks = allk[order]
+        starts = np.flatnonzero(np.concatenate(([True], ks[1:] != ks[:-1])))
+        keys = ks[starts]
+        sc = np.maximum.reduceat(alls[order], starts)
+        until = np.maximum.reduceat(allu[order], starts)
+        ring = touches_ring(key_centers(keys, far.resolution), far.resolution, self.sensor_xy, far)
+        keys, sc, until = keys[ring], sc[ring], until[ring]
+        if p.refine_budget and keys.size > p.refine_budget:
+            # hard cap on patch area bounds latency in cluttered scenes: keep highest score, then freshest
+            best = np.lexsort((-until, -sc))[: p.refine_budget]
+            best.sort()
+            keys, sc, until = keys[best], sc[best], until[best]
+        old = np.zeros(keys.size, dtype=bool)
+        if self.ref_keys.size:
+            pos = np.minimum(np.searchsorted(self.ref_keys, keys), self.ref_keys.size - 1)
+            old = self.ref_keys[pos] == keys
+        self.ref_keys, self.ref_score, self.ref_until = keys, sc, until
+        new = keys[~old]
+        if not new.size:
+            return
+        pos = np.minimum(np.searchsorted(c.keys, new), c.size - 1)
+        parents = store_take(c, np.isin(c.keys, new[c.keys[pos] == new]))
+        kids = split_into_children(parents, p.refine_res)
+        kids = store_take(kids, touches_ring(key_centers(kids.keys, p.refine_res), p.refine_res, self.sensor_xy, far))
+        self.fine = add_missing(self.fine, kids)
+
+    # SQUARED near and far distance of each store cell square to sensor (compare with r**2, no sqrt)
+    def _square_dist2(self, s: CellStore) -> tuple[np.ndarray, np.ndarray]:
+        ix, iy = decode_keys(s.keys)
+        h = s.resolution / 2
+        dx = np.abs((ix + 0.5) * s.resolution - self.sensor_xy[0])
+        dy = np.abs((iy + 0.5) * s.resolution - self.sensor_xy[1])
+        nx, ny = np.maximum(dx - h, 0.0), np.maximum(dy - h, 0.0)
+        return nx * nx + ny * ny, (dx + h) ** 2 + (dy + h) ** 2
 
     # edge strip = cells whose square crosses a ring edge. both bands keep history there:
     # out: fine cell reaching past its ring builds its coarse parent if parent missing (copy, no double count);
@@ -308,37 +456,44 @@ class TemporalFoveatedMap:
     #     coarse cell leaves once whole square is inside finer ring.
     def _handoff(self) -> None:
         n = len(self.bands)
+        self._mid_out = None
         for k, band in enumerate(self.bands):
             s = self.stores[k]
             if not s.size:
                 continue
-            near, far = self._square_dist(s)
-            out = far >= band.r_max
+            near, far = self._square_dist2(s)
+            r2 = band.r_max ** 2
+            out = far >= r2
+            if k == n - 2:
+                self._mid_out = store_take(s, out)  # reused by patch hand-off: mid cells reaching past mid ring
             if k + 1 < n and out.any():
                 parents = merge_children(empty_store(self.bands[k + 1].resolution), store_take(s, out))
                 self.stores[k + 1] = add_missing(self.stores[k + 1], parents)
-            self.stores[k] = store_take(s, near < band.r_max)
+            self.stores[k] = store_take(s, near < r2)
         for k in range(n - 1, 0, -1) if self.params.seed_children else ():
             s, fine = self.stores[k], self.bands[k - 1]
             if not s.size:
                 continue
-            near, far = self._square_dist(s)
-            reach = near < fine.r_max
+            near, far = self._square_dist2(s)
+            reach = near < fine.r_max ** 2
             if not reach.any():
                 continue
             kids = split_into_children(store_take(s, reach), fine.resolution)
             kids = store_take(kids, touches_ring(key_centers(kids.keys, fine.resolution), fine.resolution,
                                                  self.sensor_xy, fine))
             self.stores[k - 1] = add_missing(self.stores[k - 1], kids)
-            self.stores[k] = store_take(s, far >= fine.r_max)
+            self.stores[k] = store_take(s, far >= fine.r_max ** 2)
 
     # add one filtered velodyne scan taken at time t with pose T_world_velo
     def integrate(self, points_velo: np.ndarray, t_world_velo: np.ndarray, t: float) -> None:
         if self.t is not None:
             self.stores = [decay_store(s, t - self.t, self.params) for s in self.stores]
+            self.fine = decay_store(self.fine, t - self.t, self.params)
         self.t = t
         self.sensor_xy = t_world_velo[:2, 3].copy()
         self._handoff()
+        if self.refine_on:
+            self._refine_handoff(t)
         if len(points_velo) == 0:
             return
         world = velo_to_world(points_velo[:, :3], t_world_velo)
@@ -352,6 +507,8 @@ class TemporalFoveatedMap:
         for k, band in enumerate(self.bands):
             margin = band.resolution * np.sqrt(2.0)
             pts = world[(r >= band.r_min - margin) & (r < band.r_max + margin)]
+            if k == len(self.bands) - 1:
+                far_pts = pts
             if len(pts) == 0:
                 continue
             reach = band.r_max + margin
@@ -362,6 +519,31 @@ class TemporalFoveatedMap:
             obs = obs_take(obs, keep)
             tz = terrain.sample(centers[keep])
             self.stores[k] = integrate_obs(self.stores[k], obs, tz, t, self.params)
+        if self.refine_on:
+            self._scan_no = getattr(self, "_scan_no", -1) + 1
+            if self._scan_no % self.params.refine_every == 0:
+                self._refine_update(t)
+            self._refine_ingest(far_pts, terrain, t)
+
+    # feed outer-ring points that fall in refined patches into fine patch lattice (outer store already has them)
+    # far_pts = outer ring points incl. its own (wider) edge margin, already picked by integrate
+    def _refine_ingest(self, pts: np.ndarray, terrain: Terrain, t: float) -> None:
+        if not self.ref_keys.size or not len(pts):
+            return
+        far, res = self.bands[-1], self.params.refine_res
+        margin = res * np.sqrt(2.0)
+        pk = encode_keys(np.floor(pts[:, 0] / far.resolution).astype(np.int64),
+                         np.floor(pts[:, 1] / far.resolution).astype(np.int64))
+        pos = np.minimum(np.searchsorted(self.ref_keys, pk), self.ref_keys.size - 1)
+        pts = pts[self.ref_keys[pos] == pk]
+        if not len(pts):
+            return
+        cx, cy = self.sensor_xy
+        reach = far.r_max + margin
+        obs = scan_observation(pts, res, self.params.ground_percentile, bounds=(cx - reach, cx + reach, cy - reach, cy + reach))
+        centers = key_centers(obs.keys, res)
+        keep = touches_ring(centers, res, self.sensor_xy, far)
+        self.fine = integrate_obs(self.fine, obs_take(obs, keep), terrain.sample(centers[keep]), t, self.params)
 
     # rings around latest sensor as FoveatedLayers in world frame. unknown cells = NaN, count 0.
     def render(self) -> FoveatedLayers:
@@ -376,17 +558,18 @@ class TemporalFoveatedMap:
             gkeys = encode_keys(ix + int(round(spec.x_min / res)), iy + int(round(spec.y_min / res)))
             pos = np.minimum(np.searchsorted(s.keys, gkeys), max(s.size - 1, 0))
             hit = (s.keys[pos] == gkeys) if s.size else np.zeros(gkeys.size, dtype=bool)
+            dst, src = np.flatnonzero(hit), pos[hit]  # gather index computed once for all layers
 
             def pick(name: str, fill: float) -> np.ndarray:
                 a = np.full(gkeys.size, fill)
-                a[hit] = getattr(s, name)[pos[hit]]
+                a[dst] = getattr(s, name)[src]
                 return a
 
             weight = pick("weight", 0.0)
             count = np.zeros(gkeys.size, dtype=np.int64)
-            count[hit] = s.n_obs[pos[hit]]
+            count[dst] = s.n_obs[src]
             z_var = np.full(gkeys.size, np.nan)
-            z_var[hit] = s.m2[pos[hit]] / s.weight[pos[hit]]
+            z_var[dst] = s.m2[src] / s.weight[src]
             out.append(BandLayers(
                 band=band, spec=spec, flat_ids=flat_ids, count=count,
                 z_min=pick("z_min", np.nan), z_max=pick("z_max", np.nan), z_mean=pick("mean", np.nan),
@@ -394,5 +577,25 @@ class TemporalFoveatedMap:
                 extra={"weight": weight, "logodds": pick("logodds", 0.0), "last_seen": pick("last_seen", np.nan),
                        "inherited": pick("inherited", 0.0), "points": pick("points", np.nan)},
             ))
+        if self.refine_on:
+            out.append(self._render_patches())
         return FoveatedLayers(bands=out, frame="world", ground_percentile=self.params.ground_percentile,
                               center=(float(cx), float(cy)))
+
+    # refined patch cells as overlay band on outer ring (compact: only stored patch cells)
+    def _render_patches(self) -> BandLayers:
+        far, res, f = self.bands[-1], self.params.refine_res, self.fine
+        cx, cy = self.sensor_xy
+        spec = spec_from_bounds(cx - far.r_max, cx + far.r_max, cy - far.r_max, cy + far.r_max, res, "world")
+        gx, gy = decode_keys(f.keys)
+        ix, iy = gx - int(round(spec.x_min / res)), gy - int(round(spec.y_min / res))
+        inside = (ix >= 0) & (ix < spec.nx) & (iy >= 0) & (iy < spec.ny)
+        s = store_take(f, inside)
+        flat = ix[inside] * spec.ny + iy[inside]
+        return BandLayers(
+            band=Band(far.r_min, far.r_max, res), spec=spec, flat_ids=flat, count=s.n_obs.copy(),
+            z_min=s.z_min, z_max=s.z_max, z_mean=s.mean, z_var=s.m2 / np.maximum(s.weight, 1e-12), ground=s.ground,
+            extra={"weight": s.weight, "logodds": s.logodds, "last_seen": s.last_seen,
+                   "inherited": s.inherited.astype(np.float64), "points": s.points},
+            overlay=True,
+        )

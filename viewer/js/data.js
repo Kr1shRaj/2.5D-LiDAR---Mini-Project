@@ -42,7 +42,7 @@ export function decodeFrame(buf, meta, manifest) {
     for (let b = 0; b < nb; b++) rank[b + 1] = rank[b] + POP[mask[b]];
     if (rank[nb] !== h.n_obs) throw new Error(`band ${k}: mask has ${rank[nb]} cells, manifest says ${h.n_obs}`);
     const spec = manifest.bands[k];
-    return { ...h, res: spec.resolution, r_min: spec.r_min, r_max: spec.r_max, mask, cols, rank };
+    return { ...h, res: spec.resolution, r_min: spec.r_min, r_max: spec.r_max, overlay: !!spec.overlay, mask, cols, rank };
   });
   if (at !== buf.byteLength) throw new Error(`frame ${meta.i}: ${buf.byteLength} bytes, layout says ${at}`);
   return { meta, bands, images: {} };

@@ -150,6 +150,8 @@ def main() -> None:
         cor = {"v": r.verdict.tolist(), "b": r.block_m.round(2).tolist(), "h": r.hazard.round(3).tolist(),
                "u": r.unknown.round(3).tolist(), "pick": r.pick}
         blob, heads, stats = export_frame(fov, m.terrain, labeler, float(t))
+        # band list incl. refined-patch overlay (same every frame): rings near to far, then overlays
+        layer_bands = [{**bl.band.__dict__, "overlay": bl.overlay} for bl in fov.bands]
         name = f"frames/{i:06d}.bin.gz"
         gz = gzip.compress(blob, compresslevel=6, mtime=0)
         (out / name).write_bytes(gz)
@@ -167,7 +169,7 @@ def main() -> None:
         "frame": {"name": "world", "definition": "KITTI velodyne frame at sequence scan 0: T_world_velo = Tr^-1 P_i Tr. "
                   "metres. x, y horizontal, z up. yaw = heading of velodyne x axis."},
         "sequence": args.test.name, "scans": [ids[0], ids[-1]], "train": f"seq {args.train.name} (model never saw this slice)",
-        "bands": [b.__dict__ for b in BANDS], "zone_m": ZONE_M, "classes": CLASS_NAMES,
+        "bands": layer_bands, "zone_m": ZONE_M, "classes": CLASS_NAMES,
         "thresholds": TH.__dict__, "ego_box_velo": list(config.EGO_BOX_VELO[:4]),
         "columns": [{"name": n, "dtype": d, "scale": s, "nan": nan_sentinel(d)} for n, d, s in COLUMNS],
         "flags": {"inherited": FLAG_INHERITED, "model": FLAG_MODEL},

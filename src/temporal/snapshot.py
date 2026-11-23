@@ -34,7 +34,8 @@ def save_snapshot(path: Path, fov: FoveatedLayers, terrain: Terrain, meta: dict)
     for k, bl in enumerate(fov.bands):
         p = f"b{k}_"
         out |= {f"{p}r_min": np.array(bl.band.r_min), f"{p}r_max": np.array(bl.band.r_max),
-                f"{p}band_res": np.array(bl.band.resolution), f"{p}flat_ids": bl.flat_ids, **_spec(f"{p}spec_", bl.spec)}
+                f"{p}band_res": np.array(bl.band.resolution), f"{p}flat_ids": bl.flat_ids, **_spec(f"{p}spec_", bl.spec),
+                f"{p}overlay": np.array(bl.overlay)}
         out |= {f"{p}{n}": getattr(bl, n) for n in CORE}
         out |= {f"{p}extra_{n}": a for n, a in bl.extra.items()}
     np.savez_compressed(path, **out)
@@ -48,8 +49,9 @@ def load_snapshot(path: Path) -> tuple[FoveatedLayers, Terrain, dict]:
             p = f"b{k}_"
             band = Band(float(z[f"{p}r_min"]), float(z[f"{p}r_max"]), float(z[f"{p}band_res"]))
             extra = {n[len(p) + 6:]: z[n] for n in z.files if n.startswith(f"{p}extra_")}
+            overlay = bool(z[f"{p}overlay"]) if f"{p}overlay" in z.files else False
             bands.append(BandLayers(band=band, spec=_unspec(z, f"{p}spec_"), flat_ids=z[f"{p}flat_ids"],
-                                    **{n: z[f"{p}{n}"] for n in CORE}, extra=extra))
+                                    **{n: z[f"{p}{n}"] for n in CORE}, extra=extra, overlay=overlay))
         fov = FoveatedLayers(bands=bands, frame=str(z["frame"]), ground_percentile=float(z["ground_percentile"]),
                              center=tuple(float(v) for v in z["center"]))
         terrain = Terrain(spec=_unspec(z, "terrain_"), z=z["terrain_z"])
