@@ -42,6 +42,8 @@ python scripts/fetch_kitti_slice.py --seq 08 --start 1500 --count 300 --out data
 python -m scripts.benchmark                                # phase 5: uniform vs foveated vs foveated + model (train 00, test 08)
 python -m scripts.eval_seams                               # map v2: observed share around ring edges (seam check)
 python -m scripts.export_snapshots --seq data/kitti_long/sequences/00   # frozen fused maps for model work (docs/INTERFACES.md)
+python -m scripts.eval_refine                              # map v5 adaptive refinement variants (seq 00, train)
+python -m scripts.profile_map                              # cProfile of map integrate + render
 python -m scripts.eval_corridor                            # candidate corridor check vs short-window reference (seq 08 test)
 python -m scripts.find_corridor_events                     # frames where straight is blocked and another arc is a candidate
 ```

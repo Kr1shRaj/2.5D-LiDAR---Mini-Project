@@ -15,7 +15,8 @@ Two roles, one boundary. Each side may change its own internals freely as long a
 - `FoveatedLayers.sample_many(xy, names)`: world-frame xy (metres, KITTI velodyne frame at sequence scan 0).
   - Returns one float array per name.
   - NaN where the spot is unobserved or outside the rings. Never 0.0 for unobserved.
-- Band choice at a spot = the ring holding that spot's range from the sensor (`FoveatedLayers.lookup`).
+- Band choice at a spot = the ring holding that spot's range from the sensor (`FoveatedLayers.lookup`). From map v5, an observed refined-patch cell (overlay band) wins over the base ring cell; `resolution` then reads 0.2.
+- Code that loops over `fov.bands` must expect overlay bands (check `bl.overlay`); they overlap their base ring.
 - Layer names:
   - core: `count`, `z_min`, `z_max`, `z_mean`, `z_var`, `ground`
   - extra: `weight`, `logodds`, `last_seen`, `inherited`, `points` (map v3+)
@@ -34,6 +35,7 @@ Two roles, one boundary. Each side may change its own internals freely as long a
 | 2 | Edge-strip cells kept in both bands (copy when missing, removed only when wholly on the other side). Each band also ingests points one own-cell diagonal past its edges, for cells touching its ring. No seam gap. |
 | 3 | v2 + `points` layer. |
 | 4 | v3 + ego box x_max 2.8 m (recording-car body points removed). |
+| 5 | v4 + adaptive refinement: `render()` adds an **overlay band** (`BandLayers.overlay = True`, 20 cm, ring 25–50 m) of hazard-cued patch cells. Lookup returns the overlay cell where it is observed, else the base ring cell. |
 
 ## 2. Snapshots (frozen map for model work)
 

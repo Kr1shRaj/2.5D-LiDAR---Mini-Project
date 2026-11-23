@@ -11,7 +11,8 @@ A LiDAR on a car's roof gives ~120,000 3D points per scan, 10 scans per second (
 - **Map version 4** (`src/config.MAP_VERSION`):
   - v2 fixed data gaps at ring edges.
   - v3 added the `points` layer.
-  - v4 widened the ego box to x_max 2.8 m. Points from the recording car's own body (x 2.5–2.6 m, y ±0.5 m, z −0.9 m, in 93 % of scans) used to leave a trail of fake obstacles along the driven path.
+  - v4 widened the ego box to x_max 2.8 m.
+  - v5 adds adaptive refinement: 20 cm hazard patches in the 25–50 m ring as an **overlay band**. Lookups there return 0.2 m resolution where a patch cell exists. Your labeler p95 rose to 29.0 ms (budget 30), partly from lookups visiting this band. Points from the recording car's own body (x 2.5–2.6 m, y ±0.5 m, z −0.9 m, in 93 % of scans) used to leave a trail of fake obstacles along the driven path.
 - **Latest benchmark numbers:** `docs/REPORT.md`, section "Map v4".
 - **Your two problems:**
   1. **Accuracy gap.** 0–25 m macro F1 on map v4 is **0.484 foveated + model vs 0.509 uniform + model** (gap 0.025; it was 0.046 on map v1).

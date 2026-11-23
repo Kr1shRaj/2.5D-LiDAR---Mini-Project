@@ -18,7 +18,7 @@ python -m http.server 8000 --bind 127.0.0.1
 - Then 2 passes over the test slice:
   - Pass 1 is timed: integrate + render, then labeler update, same split as the benchmark.
   - Pass 2 repeats the deterministic pipeline untimed and writes frames.
-- Output: `outputs/replay/08_1500-1799/` (git ignored). 300 frames, about 124 MB gzip.
+- Output: `outputs/replay/08_1500-1799/` (git ignored). 300 frames, about 158 MB gzip (map v5 adds refined patch cells).
 - Other replay folder: `http://127.0.0.1:8000/viewer/?replay=../outputs/replay/<folder>/`.
 - Needs a browser with `DecompressionStream` (current Chrome, Edge, Firefox, Safari).
 - Browsers block `file://` data loads, so a local server is required.

@@ -326,6 +326,66 @@ Seq 08 test, 58 scored scans × 15 arcs (`scripts/eval_corridor.py`):
 - **Missed blocks:** reference-blocked arcs that come out CAUTION live (30.8 %) are missed blocks. They are not false clears: the arc is still flagged.
 - The replay viewer draws arcs, the picked candidate, block points and the driven path, with bookmarks for the 25 frames where straight is blocked and another arc is a candidate.
 
+### Map v5 — adaptive refinement + faster hand-off
+
+`AGENTS.md`: ring bands are only the base layer; resolution must refine on hazard cues.
+
+**How refinement works:**
+- In the 25–50 m ring (50 cm base cells), a cell with a hazard cue opens a **3 × 3 patch of 20 cm cells**.
+- **Cues:**
+  - ground step ≥ 8 cm to a 4-neighbour cell
+  - z std 8–30 cm inside the cell (rough ground; walls have metre-scale std and are excluded)
+  - obstacle evidence (log-odds > 0)
+- **Guards:**
+  - A cue counts only from cells seen in ≥ 3 recent scans and touched this scan. Far ground noise (median error 0.12 m) otherwise fired the 8 cm step cue on ~40 % of the ring.
+  - **Budget:** at most 3000 refined base cells, ranked steps first, then roughness, then obstacle. Without the cap, seq 08 asked for ~6,500–7,300 cells and map p95 rose to 73–81 ms.
+  - Cue update runs every 2nd scan; the 1 s hold covers the gap. Points feed the patches every scan.
+
+**History rules (no loss, no double counting):**
+- The patch is a second layer over the base ring. The 50 cm base keeps all its own data.
+- Fine cells are seeded from their parent (flagged inherited), then replaced by real 20 cm data.
+- Fine cells cross the 25 m edge as copies only when missing, both ways, onto the same 20 cm lattice.
+- An expired patch drops only its fine cells.
+- Lookup serves the fine cell where it is observed, else the base cell.
+- Tested: weights never exceed the one-layer bound, expiry leaves the base untouched, and with refinement off the output is bit-identical to map v4.
+
+**Tuning (seq 00, train only, `scripts/eval_refine.py`):**
+
+| Variant | Curbs kept 25–50 m | Map ms median / p95 | Store MB |
+|---|---|---|---|
+| Uniform 20 cm | 19 % | 33.4 / 41.4 | 6.04 |
+| Foveated, no refine | 7 % | 31.3 / 37.1 | 5.53 |
+| Refine, no budget, cues every scan | 13 % | 39.5 / 51.6 | 7.80 |
+| **Refine, map v5 config** | **10 %** | 40.1 / 47.9 | 7.08 |
+
+**Final, seq 08 test.** Map v4 code and map v5 code were run back to back on the same day (`outputs/phase5_benchmark_mapv4_sameday.txt`, `..._mapv5.txt`):
+
+| Measure | Map v4 | Map v5 |
+|---|---|---|
+| Foveated map ms, median / p95 | 45.5 / 57.3 | 50.0 / 59.2 |
+| Uniform map ms, median / p95 | 51.0 / 64.5 | 41.7 / 50.7 |
+| Labeler ms, median / p95 | 20.6 / 25.2 | 24.0 / 29.0 |
+| Foveated + model total, median / p95 | 66.2 / 81.7 | 74.3 / 86.2 |
+| Store MB max (foveated / uniform) | 7.64 / 9.63 | 9.36 / 9.63 |
+| Rendered MB (foveated) | 4.70 | 5.48 |
+| **Curbs kept 25–50 m (foveated)** | **8 %** | **11 %** (uniform 19 %) |
+| Curbs kept 2–10 / 10–25 m (foveated) | 50 / 24 % | 50 / 24 % |
+| Ground cover 25–50 m / err p95 | 73 % / 1.561 m | 74 % / 1.664 m |
+| Ghost area (foveated) | 1371 m² | 1137 m² |
+| Area bloat (foveated) | 1.47× | 1.44× |
+| 0–25 m macro F1, foveated + model / uniform + model | 0.484 / 0.509 | 0.481 / 0.509 |
+
+- **Refinement closes about a quarter of the far-curb gap** (8 → 11 % vs 19 % uniform). The budget, needed for latency, holds it below the 13 % seen uncapped on seq 00.
+- **Map p95 stays under the 65 ms budget.** The hand-off speed-ups pay for most of the refinement cost:
+  - sorted-merge `add_missing` and `integrate_obs` (no `np.isin` / `union1d` / `argsort`)
+  - no copy when nothing is dropped
+  - squared distances
+  - a single gather index in render
+- The uniform map gained most from these speed-ups (−10 / −14 ms), since it has one large store.
+- **Labeler p95 is 29.0 ms against its 30 ms budget.** Part of that is lookups visiting the patch layer, part is noise; it needs watching.
+- **Corridor unchanged on map v5** (seq 08): verdict agreement 85.6 %, false clear 0.4 %, driven arc blocked 1.9 %, 3.69 / 4.55 ms.
+- **Seams flat:** 93.2–93.7 % at 10 m, 59.1–60.1 % at 25 m.
+
 ## 5. Measured trade-offs
 
 1. **Memory: foveation wins.** Half the rendered map (4.70 vs 9.47 MB) and 20 % less stored state, with
@@ -350,7 +410,7 @@ Seq 08 test, 58 scored scans × 15 arcs (`scripts/eval_corridor.py`):
 
 - Close the foveated vs uniform gap for the classifier (0.025 on map v4) and the model's over-eager obstacle labels on flat road: diagnose by cell size and
   inherited flag first, then neighbour context features. Tune on a separate validation sequence (seq 05).
-- Adaptive refinement in the far ring on steps / variance / obstacle cues (far curbs kept: 8 % vs 19 % uniform).
+- Far curbs: refinement reaches 11 % (uniform 19 %). More needs a bigger budget, i.e. a faster base pipeline (compiled kernels).
 - Cut p95 latency (render and hand-off still ~20 ms; a compiled implementation would remove most Python overhead).
 - Validate on more sequences and with SemanticKITTI labels for moving objects.
 

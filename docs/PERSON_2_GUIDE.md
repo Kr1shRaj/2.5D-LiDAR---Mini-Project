@@ -27,8 +27,8 @@ Research prototype: nothing here steers or controls a vehicle, and nothing predi
 
 | Part | Budget | Last measured (map v4) |
 |---|---|---|
-| map integrate + render | **65 ms** | 49.7 median / 61.1 p95 |
-| hazard labeler (Person 1) | 30 ms | 22.3 median / 27.7 p95 |
+| map integrate + render | **65 ms** | 50.0 median / 59.2 p95 (map v5) |
+| hazard labeler (Person 1) | 30 ms | 24.0 median / 29.0 p95 (tight) |
 | corridor check | **5 ms** | 3.63 median / 4.46 p95 |
 
 - Timing varies run to run: two runs of the same unchanged code differed by up to ~11 ms total p95.
@@ -53,14 +53,18 @@ Research prototype: nothing here steers or controls a vehicle, and nothing predi
 - **Sanity row:** "reference blocks driven arc" must stay ~0 % on test. It was 0.0 % on seq 08 and 22.4 % on seq 00, where the reference is noisier. If it rises, fix the reference before trusting any corridor number.
 - **Known weakness:** 30.8 % of reference-blocked arcs come out CAUTION live, not BLOCKED. That is a missed block, but not a false clear. Look at those cases in the viewer before tuning further.
 
-### 5.2 Adaptive refinement (core spec item, not built yet)
+### 5.2 Adaptive refinement — DONE in map v5 (see report). Follow-ups:
+- Raise far curbs past 11 %: budget is the limit (uncapped reached 13 % on seq 00, but cost +10 ms p95).
+- Watch labeler p95 (29.0 ms): lookups now also visit the overlay band.
+
+Original plan, kept for reference:
 - `AGENTS.md`: ring bands are only the base layer; refinement must trigger on height variance, sharp steps, or hazard cues.
 - Plan: in the 25–50 m ring, a 50 cm cell with step ≥ 8 cm, high `z_var`, or log-odds > 0 is refined to 20 cm for a local patch.
 - The same rule as hand-off applies: copy when missing, never double count, keep history on refine and un-refine.
 - **Target metric:** curbs kept 25–50 m (foveated 8 % vs uniform 19 % in Phase 5).
 - **Also report:** memory, map ms p95 (≤ 65 ms), ghost area, hazard F1 change. Bump `MAP_VERSION`.
 
-### 5.3 Map latency headroom
+### 5.3 Map latency headroom — partly DONE in map v5 (sorted merges, no-copy take, squared distances; refine off is bit-identical to v4). Remaining:
 - Hand-off and render are still Python-heavy.
 - **Profile first** (`cProfile` on `TemporalFoveatedMap.integrate` / `render`).
 - Candidates:
