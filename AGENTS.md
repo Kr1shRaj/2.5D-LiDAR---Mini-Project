@@ -46,6 +46,8 @@ Research prototype only. Not production vehicle collision-avoidance system.
   - `src/temporal/`: multi-scan fusion, cell confidence, stale decay, ghost trail filter.
   - `src/models/`: terrain and hazard classification.
   - `src/viz/`: raw cloud overlay, elevation heatmaps, resolution band viz.
+  - `src/planning/`: candidate corridor check (constant-curvature arcs scored on the map). Reports
+    blocked / caution / clear only. Never steers, plans for, or controls a vehicle; never "collision avoidance".
   - `viewer/`: browser replay (HTML + plain JS, no build). Pure consumer of files from
     `scripts/export_replay.py`. Never imports or calls `src/`; delete it and core still works.
 - **Coordinate frames are sacred.** Sensor (velodyne) frame, camera frame, and world frame
