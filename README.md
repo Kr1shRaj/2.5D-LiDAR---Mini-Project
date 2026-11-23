@@ -13,6 +13,7 @@ pytest
 
 Full project report with all five phases, architecture and benchmark tables: [`docs/REPORT.md`](docs/REPORT.md).
 Team contracts (map ↔ model ↔ corridor, latency budget, data split): [`docs/INTERFACES.md`](docs/INTERFACES.md).
+Team guides: [`docs/PERSON_1_GUIDE.md`](docs/PERSON_1_GUIDE.md) (model), [`docs/PERSON_2_GUIDE.md`](docs/PERSON_2_GUIDE.md) (systems / viewer).
 
 ## Layout
 
@@ -41,6 +42,8 @@ python scripts/fetch_kitti_slice.py --seq 08 --start 1500 --count 300 --out data
 python -m scripts.benchmark                                # phase 5: uniform vs foveated vs foveated + model (train 00, test 08)
 python -m scripts.eval_seams                               # map v2: observed share around ring edges (seam check)
 python -m scripts.export_snapshots --seq data/kitti_long/sequences/00   # frozen fused maps for model work (docs/INTERFACES.md)
+python -m scripts.eval_corridor                            # candidate corridor check vs short-window reference (seq 08 test)
+python -m scripts.find_corridor_events                     # frames where straight is blocked and another arc is a candidate
 ```
 
 ## Replay viewer

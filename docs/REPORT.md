@@ -269,6 +269,63 @@ Benchmark, both maps run on the same day (timing varies between days; Phase 5 nu
 - The fix narrows the model gap from 0.046 to 0.035. It does not close it.
 - Map p95 is within the 65 ms map budget on this run.
 
+### Map v3 / v4 — points layer, ego box fix, candidate corridor check
+
+**Map v3** adds a `points` layer: the mean number of points per scan in each cell, for the model's density feature.
+
+**Map v4 widens the ego box from x_max 1.6 m to 2.8 m.**
+- Fixed sensor-frame points at x 2.5–2.6 m, y ±0.5 m, z −0.9 m appear in 93–94 % of scans on both sequences. They are part of the recording car.
+- They planted an "obstacle" 2.5 m ahead in every scan. The car then drove over that spot, so no later scan ever saw it free and cleared it.
+- Result: a trail of fake obstacle cells along the driven path.
+- The lowest beam first reaches the road ~3.7 m away, so the wider box removes nothing real.
+
+Benchmark on map v4 (same scripts as Phase 5; seq 08 test):
+
+| Measure | Map v2 | Map v4 |
+|---|---|---|
+| Foveated map ms, median / p95 | 48.6 / 59.9 | 49.7 / 61.1 |
+| Labeler ms, median / p95 | 22.1 / 28.0 | 22.3 / 27.7 |
+| Foveated + model total ms, median / p95 | 70.9 / 87.1 | 72.3 / 85.7 |
+| Stored MB max (foveated) | 6.96 | 7.64 (`points` layer) |
+| 0–25 m macro F1: foveated + model / uniform + model | 0.478 / 0.513 | 0.484 / 0.509 |
+| 0–25 m obstacle called traversable (foveated + model) | 15.4 % | 15.6 % |
+
+- Curbs kept, obstacle recall and ground error are unchanged to the reported precision.
+- The seam check is still flat at both edges.
+- The hazard benchmark's sampled truth hardly moves, because it rarely samples the narrow driven strip. The corridor check below is where the fix shows.
+
+**Candidate corridor check (`src/planning/corridor.py`).**
+- **What it is:** a research check of which driving arcs the map shows as blocked, caution or clear. It steers nothing and predicts no collisions: the KITTI car really drove.
+- **Arcs:**
+  - 15 constant-curvature arcs, curvature −0.1 … +0.1 m⁻¹ (radius ≥ 10 m), 20 m long.
+  - Car footprint 2.2 m wide, probes every 0.2 m along and ~0.18 m across (~20k probes).
+  - Arcs are built in the velodyne frame and moved to world with the scan pose.
+- **Blocking rule:** an arc is blocked when an obstacle cluster (≥ 4 obstacle probes within 1 m of arc) lies closer than 8 m. An obstacle probe counts only if the model label is obstacle **and** the map's own obstacle evidence agrees (log-odds > 0).
+- **Unseen spots are never free:** an arc more than 30 % unseen is never picked.
+
+Why map evidence is required: model obstacle labels alone over-fire on flat road.
+- On the path the car actually drove, 80 % of model obstacle probes had height over terrain below 0.30 m (median 0.25 m), negative log-odds and ~1 cm roughness.
+- With labels alone, the driven arc came out blocked in 62.3 % of test scans.
+
+**Truth for scoring:**
+- A dense 0.1 m stack of scans i−5 … i+5 (~1 s) around each scored scan, with the same thresholds.
+- A whole-slice stack smears passing cars along the lane: it blocked 83–97 % of arcs, so it was rejected.
+- **Sanity check:** the reference blocks the driven arc in 0.0 % of seq 08 test scans.
+- `min_hits` = 4 was chosen on seq 00 (train) only: best verdict agreement (90.9 %) in the sweep.
+
+Seq 08 test, 58 scored scans × 15 arcs (`scripts/eval_corridor.py`):
+
+| Config | Verdict agree | Blocked yes/no agree | Reference-blocked arcs missed | False clear (live CLEAR, ref BLOCKED) | Picked arc ref-blocked | Driven arc blocked |
+|---|---|---|---|---|---|---|
+| foveated + model + evidence | **85.2 %** | 88.3 % | 30.8 % | **0.4 %** | 3.4 % | **1.9 %** |
+| foveated + model, label only | 54.0 % | 55.2 % | 0.0 % | 0.0 % | 0.0 % | 62.3 % |
+| foveated + rule + evidence | 80.6 % | 88.0 % | 33.1 % | 0.4 % | 3.4 % | 1.9 % |
+| uniform + model + evidence | 85.9 % | 89.0 % | 29.7 % | 0.4 % | 3.4 % | 0.0 % |
+
+- **Corridor cost:** 3.63 ms median, 4.46 ms p95 (budget 5 ms).
+- **Missed blocks:** reference-blocked arcs that come out CAUTION live (30.8 %) are missed blocks. They are not false clears: the arc is still flagged.
+- The replay viewer draws arcs, the picked candidate, block points and the driven path, with bookmarks for the 25 frames where straight is blocked and another arc is a candidate.
+
 ## 5. Measured trade-offs
 
 1. **Memory: foveation wins.** Half the rendered map (4.70 vs 9.47 MB) and 20 % less stored state, with
@@ -291,9 +348,8 @@ Benchmark, both maps run on the same day (timing varies between days; Phase 5 nu
 
 ### Next steps
 
-- Close the foveated vs uniform gap for the classifier (0.035 after map v2): diagnose by cell size and
+- Close the foveated vs uniform gap for the classifier (0.025 on map v4) and the model's over-eager obstacle labels on flat road: diagnose by cell size and
   inherited flag first, then neighbour context features. Tune on a separate validation sequence (seq 05).
-- Candidate corridor check on the map (planned: `src/planning/`), scored live map vs reference map.
 - Adaptive refinement in the far ring on steps / variance / obstacle cues (far curbs kept: 8 % vs 19 % uniform).
 - Cut p95 latency (render and hand-off still ~20 ms; a compiled implementation would remove most Python overhead).
 - Validate on more sequences and with SemanticKITTI labels for moving objects.

@@ -187,8 +187,11 @@ function drawCorridor(g, meta, lw) {
       g.beginPath();
       pts.slice(from, to).forEach(([x, y], j) => (j ? g.lineTo(x, y) : g.moveTo(x, y)));
       g.globalAlpha = alpha;
+      g.strokeStyle = '#0d1117';  // dark halo keeps arc readable over red / green cells
+      g.lineWidth = lw(6);
+      g.stroke();
       g.strokeStyle = color;
-      g.lineWidth = lw(2);
+      g.lineWidth = lw(3);
       g.stroke();
     }
     g.globalAlpha = 1;
@@ -213,7 +216,11 @@ function drawCorridor(g, meta, lw) {
     g.stroke();
     g.globalAlpha = 1;
     line();
-    g.lineWidth = lw(3);
+    g.strokeStyle = '#0d1117';
+    g.lineWidth = lw(7);
+    g.stroke();
+    g.strokeStyle = '#39d0f0';
+    g.lineWidth = lw(4);
     g.stroke();
     g.lineCap = 'butt';
     // arrow head at tip, along last segment
@@ -257,14 +264,23 @@ function fillEvents() {
   const sel = $('events'), ev = man.corridor?.events ?? [];
   sel.innerHTML = `<option value="">${ev.length ? `${ev.length} corridor events` : 'no events'}</option>` +
     ev.map((i) => `<option value="${i}">frame ${i + 1} · scan ${man.frames[i].scan}</option>`).join('');
-  sel.onchange = (e) => { if (e.target.value !== '') { setPlaying(false); seek(+e.target.value); } };
+  sel.onchange = (e) => { if (e.target.value !== '') { setPlaying(false); seek(+e.target.value); focusCorridor(); } };
+}
+
+// zoom so corridor zone (arc length + margin) fills view; used on event jumps
+function focusCorridor() {
+  const cv = $('map');
+  st.s = Math.min(cv.clientWidth, cv.clientHeight) / (2 * (man.corridor.length_m + 5));
+  st.panX = 0;
+  st.panY = cv.clientHeight * 0.25;  // car below centre so arcs ahead get the room
+  st.dirty = true;
 }
 
 // jump to next / previous corridor event
 function stepEvent(dir) {
   const ev = man.corridor?.events ?? [];
   const next = dir > 0 ? ev.find((i) => i > st.i) : [...ev].reverse().find((i) => i < st.i);
-  if (next !== undefined) { setPlaying(false); seek(next); $('events').value = String(next); }
+  if (next !== undefined) { setPlaying(false); seek(next); $('events').value = String(next); focusCorridor(); }
 }
 
 // cell under world xy: band by range from sensor (same rule as FoveatedLayers.lookup), then lattice cell

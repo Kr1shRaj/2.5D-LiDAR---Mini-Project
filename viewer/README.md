@@ -51,6 +51,20 @@ HUD per scan:
 
 Replay frames/s is browser speed, not pipeline speed.
 
+## Corridor layer
+
+Toggle **Corridor**:
+- 15 candidate arcs (radius ≥ 10 m, 20 m long): green clear, orange caution, red blocked.
+- ✕ = first obstacle cluster on a blocked arc.
+- Cyan band + arrow = picked candidate.
+- Dashed white = path the driver really took next.
+
+HUD: straight verdict, candidate arc, clear length, unknown / hazard share, corridor ms.
+
+**Events** menu (or N / P keys) jumps to frames where straight is blocked and another arc is a candidate, zoomed to the 25 m zone.
+
+Candidate check only: the KITTI car really drove, nothing was steered.
+
 ## Honesty notes
 
 - Pipeline ms change run to run on the same machine. Two export runs of the unchanged pipeline gave:
@@ -71,6 +85,7 @@ Replay frames/s is browser speed, not pipeline speed.
 - ← / →: step one frame. Shift + arrow: step 10.
 - Home / End: first / last frame.
 - 1-4: fill.
+- N / P: next / previous corridor event.
 - V: cycle view (car centred heading up, car centred world axes, world fixed).
 - R: reset view.
 - Drag: pan. Wheel: zoom around cursor.

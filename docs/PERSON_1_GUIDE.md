@@ -14,7 +14,9 @@ A LiDAR on a car's roof gives ~120,000 3D points per scan, 10 scans per second (
   - v4 widened the ego box to x_max 2.8 m. Points from the recording car's own body (x 2.5–2.6 m, y ±0.5 m, z −0.9 m, in 93 % of scans) used to leave a trail of fake obstacles along the driven path.
 - **Latest benchmark numbers:** `docs/REPORT.md`, section "Map v4".
 - **Your two problems:**
-  1. **Accuracy gap.** The model scores lower on the foveated map than on the uniform 20 cm map (0–25 m macro F1). See the map v4 table in the report for current values.
+  1. **Accuracy gap.** 0–25 m macro F1 on map v4 is **0.484 foveated + model vs 0.509 uniform + model** (gap 0.025; it was 0.046 on map v1).
+     - Obstacle called traversable: 15.6 % on both.
+     - Labeler p95 is 27.7 ms against your 30 ms budget, so you have ~2 ms of headroom.
   2. **Over-eager obstacles on flat road.** On the path the car actually drove, 80 % of the model's "obstacle" cells look like plain road to every other signal:
      - height over terrain median 0.25 m, below the 0.30 m line
      - map obstacle evidence (log-odds) negative

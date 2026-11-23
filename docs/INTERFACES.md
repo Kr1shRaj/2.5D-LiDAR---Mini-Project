@@ -33,6 +33,7 @@ Two roles, one boundary. Each side may change its own internals freely as long a
 | 1 | Phases 3–5: centre-based ring hand-off. Seam gaps just past ring edges. |
 | 2 | Edge-strip cells kept in both bands (copy when missing, removed only when wholly on the other side). Each band also ingests points one own-cell diagonal past its edges, for cells touching its ring. No seam gap. |
 | 3 | v2 + `points` layer. |
+| 4 | v3 + ego box x_max 2.8 m (recording-car body points removed). |
 
 ## 2. Snapshots (frozen map for model work)
 
@@ -53,8 +54,14 @@ Two roles, one boundary. Each side may change its own internals freely as long a
 
 ## 4. Corridor input
 
-- The corridor check takes a `label_at(xy) -> class id` callable only.
+- The corridor check takes:
+  - `label_at(xy) -> class id` (−1 = unobserved)
+  - optional `occupied_at(xy) -> bool`: map obstacle evidence, `logodds > 0`
+- An obstacle label blocks only with evidence; without evidence it counts as hazardous.
 - It never imports model code, so it works with rule labels before the model is ready.
+- `CorridorParams` defaults:
+  - 15 arcs, |k| ≤ 0.1, 20 m long, half width 1.1 m
+  - stop 8 m, cluster ≥ 4 probes within 1 m (picked on seq 00 train)
 
 ## 5. Latency budget (p95 per scan, 100 ms total, 10 Hz)
 

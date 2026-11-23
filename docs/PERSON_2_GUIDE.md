@@ -27,8 +27,8 @@ Research prototype: nothing here steers or controls a vehicle, and nothing predi
 
 | Part | Budget | Last measured (map v4) |
 |---|---|---|
-| map integrate + render | **65 ms** | see `docs/REPORT.md`, "Map v4" |
-| hazard labeler (Person 1) | 30 ms | same |
+| map integrate + render | **65 ms** | 49.7 median / 61.1 p95 |
+| hazard labeler (Person 1) | 30 ms | 22.3 median / 27.7 p95 |
 | corridor check | **5 ms** | 3.63 median / 4.46 p95 |
 
 - Timing varies run to run: two runs of the same unchanged code differed by up to ~11 ms total p95.
