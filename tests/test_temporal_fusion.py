@@ -228,3 +228,60 @@ def test_cells_ahead_prefilled_from_coarse_history() -> None:
     assert band_idx.tolist() == [0, 0]
     assert np.allclose(fov.sample(ahead, "ground"), GROUND_Z)
     assert np.all(fov.sample(ahead, "inherited") == 1.0)
+
+
+# observed share of lookups on thin ring slice [r0, r1) around sensor
+def slice_share(fov, r0: float, r1: float, rng: np.random.Generator, n: int = 4000) -> float:
+    r = rng.uniform(r0, r1, n)
+    a = rng.uniform(0, 2 * np.pi, n)
+    xy = np.array(fov.center) + np.column_stack([r * np.cos(a), r * np.sin(a)])
+    return float(np.mean(np.nan_to_num(fov.sample(xy, "count")) > 0))
+
+
+# history alone (no new scan) must cover both sides of each ring edge equally: no seam gap
+def test_no_seam_gap_at_ring_edges_after_move() -> None:
+    rng = np.random.default_rng(seed=41)
+    m = TemporalFoveatedMap(BANDS, PARAMS)
+    p0 = pose(0.0, 0.0)
+    m.integrate(to_velo(road(rng, 0.0, 0.0, n=300000), p0), p0, t=0.0)
+    for k, x in enumerate((0.8, 1.6, 2.4)):  # drive, no new points: spots cross ring edges
+        m.integrate(np.empty((0, 3)), pose(x, 0.0), t=0.1 * (k + 1))
+    fov = m.render()
+    for edge in (6.0, 12.0):
+        inside = slice_share(fov, edge - 0.2, edge - 0.1, rng)
+        past = slice_share(fov, edge, edge + 0.1, rng)
+        assert inside > 0.8
+        assert past == pytest.approx(inside, abs=0.03)
+        assert slice_share(fov, edge - 0.1, edge, rng) == pytest.approx(inside, abs=0.03)
+
+
+# edge strip cells live in two bands as copies: copies must never add up, weight stays under one-band bound
+def test_edge_strip_copies_never_double_count() -> None:
+    rng = np.random.default_rng(seed=42)
+    m = TemporalFoveatedMap(BANDS, PARAMS)
+    for i in range(30):
+        p = pose(0.3 * i, 0.0)
+        m.integrate(to_velo(road(rng, 0.3 * i, 0.0), p), p, t=0.1 * i)
+    bound = 1.0 / (1.0 - np.exp(-0.1 / PARAMS.tau_s))  # steady state of weight 1 per scan, decayed
+    assert max(s.weight.max() for s in m.stores) <= bound + 1e-6
+
+
+# snapshot round trip: same lookups, NaN stays NaN, terrain + meta kept
+def test_snapshot_round_trip(tmp_path) -> None:
+    from src.temporal.snapshot import load_snapshot, save_snapshot
+
+    rng = np.random.default_rng(seed=43)
+    m = TemporalFoveatedMap(BANDS, PARAMS)
+    p0 = pose(1.0, -2.0, 0.3)
+    m.integrate(to_velo(road(rng, 1.0, -2.0), p0), p0, t=0.0)
+    fov = m.render()
+    save_snapshot(tmp_path / "s.npz", fov, m.terrain, {"map_version": 2, "scan": 7, "pose": p0})
+    fov2, terrain2, meta = load_snapshot(tmp_path / "s.npz")
+    xy = np.array(fov.center) + rng.uniform(-22, 22, (5000, 2))
+    names = ["z_max", "ground", "count", "weight", "logodds", "inherited", "last_seen"]
+    a, b = fov.sample_many(xy, names), fov2.sample_many(xy, names)
+    for n in names:
+        np.testing.assert_array_equal(a[n], b[n])
+    assert np.isnan(a["z_max"]).any()  # unobserved spots really tested
+    np.testing.assert_array_equal(m.terrain.sample(xy), terrain2.sample(xy))
+    assert meta["map_version"] == 2 and meta["scan"] == 7 and np.allclose(meta["pose"], p0)

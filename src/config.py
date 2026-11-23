@@ -13,6 +13,10 @@ FOVEATED_BANDS = (
     Band(25.0, RANGE_MAX_M, 0.50),
 )
 
+# fused map output version. bump when fusion / hand-off changes what render() returns.
+# v1 = phases 3-5 (centre-based ring hand-off, seam gaps). v2 = edge strip kept in both bands, no seam.
+MAP_VERSION = 2
+
 # phase 3 temporal fusion. first-pick values, tune on data. log-odds = octomap defaults (p 0.7 hit, 0.4 miss).
 TEMPORAL_TAU_S = 3.0  # stale decay time constant
 TEMPORAL_PRUNE_WEIGHT = 0.05  # one-scan cell forgotten after ~3 tau unseen

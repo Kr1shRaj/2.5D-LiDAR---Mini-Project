@@ -9,13 +9,17 @@ from src.temporal.terrain import Terrain, local_terrain
 
 # Streaming foveated map in WORLD frame. Cells sit on world-aligned lattices (one per band
 # resolution), so vehicle rotation never resamples a cell. Rings follow the sensor.
-# Each point goes to the band picked by its range from the sensor at capture time.
+# Each band takes points in its ring plus a margin of one own-cell diagonal past each edge, but keeps
+# only cells whose square touches its ring. Edge cells then see every point inside their square
+# (a touching cell's points all lie within one diagonal of the ring), not just their own side.
 # Each scan counts as one observation per cell (weight 1); old weight decays with time.
 # ground = decayed weighted mean of per-scan cell ground (per-scan ground = p-th percentile, as phase 1).
 # Obstacle evidence = log-odds per cell: hit if scan z max rises obstacle_h over local terrain.
-# Hand-off out: cell whose centre leaves its ring outward merges into next coarser lattice.
-# Hand-off in: coarse cell whose centre enters finer ring splits into fine children that copy
-# parent stats, flagged `inherited`. First real fine scan of child replaces copied stats.
+# Lookup picks band by query point range, so a cell whose square crosses a ring edge answers for its
+# own side of the edge. Both bands keep such edge cells (with history) until wholly on the other side.
+# Hand-off out: fine cell reaching past its ring builds missing coarse parent (merged copy).
+# Hand-off in: coarse cell reaching into finer ring seeds missing fine children that copy parent
+# stats, flagged `inherited`. First real fine scan of child replaces copied stats.
 
 KEY_SHIFT = 2**31
 
@@ -139,6 +143,19 @@ def scan_observation(
     lix, liy = np.divmod(ids, spec.ny)
     keys = encode_keys(lix + int(round(spec.x_min / resolution)), liy + int(round(spec.y_min / resolution)))
     return ScanObs(keys=keys, n=n, mean=mean, var=var, z_min=z_min, z_max=z_max, ground=ground)
+
+
+# mask of cells (centres xy, square side res) whose square touches ring [r_min, r_max) around sensor
+def touches_ring(centers: np.ndarray, res: float, sensor: np.ndarray, band: Band) -> np.ndarray:
+    d = np.abs(centers - sensor)
+    near = np.maximum(d - res / 2, 0.0)
+    far = d + res / 2
+    return (np.hypot(near[:, 0], near[:, 1]) < band.r_max) & (np.hypot(far[:, 0], far[:, 1]) > band.r_min)
+
+
+# keep selected cells of scan observation
+def obs_take(obs: ScanObs, mask: np.ndarray) -> ScanObs:
+    return ScanObs(**{f.name: getattr(obs, f.name)[mask] for f in fields(ScanObs)})
 
 
 # fold one scan observation (weight 1 per cell) into store. terrain_z = local terrain under each obs cell.
@@ -268,31 +285,42 @@ class TemporalFoveatedMap:
     def n_cells(self) -> int:
         return sum(s.size for s in self.stores)
 
-    # centre distance of each store cell to sensor
-    def _dist(self, s: CellStore) -> np.ndarray:
-        return np.hypot(*(key_centers(s.keys, s.resolution) - self.sensor_xy).T) if s.size else np.empty(0)
+    # near and far distance of each store cell square to sensor
+    def _square_dist(self, s: CellStore) -> tuple[np.ndarray, np.ndarray]:
+        d = np.abs(key_centers(s.keys, s.resolution) - self.sensor_xy)
+        near = np.maximum(d - s.resolution / 2, 0.0)
+        return np.hypot(near[:, 0], near[:, 1]), np.hypot(*(d + s.resolution / 2).T)
 
-    # out: cells past ring edge (+ one coarse cell slack, stops split/merge flip-flop) merge into coarser store.
-    # last ring: drop (out of local map). in: coarse cells inside finer ring split into inherited children.
+    # edge strip = cells whose square crosses a ring edge. both bands keep history there:
+    # out: fine cell reaching past its ring builds its coarse parent if parent missing (copy, no double count);
+    #      fine cell leaves once whole square is outside. last ring: just drop (out of local map).
+    # in: coarse cell reaching into finer ring seeds missing fine children there (copy, flagged inherited);
+    #     coarse cell leaves once whole square is inside finer ring.
     def _handoff(self) -> None:
         n = len(self.bands)
         for k, band in enumerate(self.bands):
             s = self.stores[k]
-            slack = self.bands[k + 1].resolution if k + 1 < n else 0.0
-            leave = self._dist(s) >= band.r_max + slack
-            if not leave.any():
+            if not s.size:
                 continue
-            self.stores[k] = store_take(s, ~leave)
-            if k + 1 < n:
-                self.stores[k + 1] = merge_children(self.stores[k + 1], store_take(s, leave))
+            near, far = self._square_dist(s)
+            out = far >= band.r_max
+            if k + 1 < n and out.any():
+                parents = merge_children(empty_store(self.bands[k + 1].resolution), store_take(s, out))
+                self.stores[k + 1] = add_missing(self.stores[k + 1], parents)
+            self.stores[k] = store_take(s, near < band.r_max)
         for k in range(n - 1, 0, -1) if self.params.seed_children else ():
-            s = self.stores[k]
-            enter = self._dist(s) < self.bands[k - 1].r_max
-            if not enter.any():
+            s, fine = self.stores[k], self.bands[k - 1]
+            if not s.size:
                 continue
-            self.stores[k] = store_take(s, ~enter)
-            kids = split_into_children(store_take(s, enter), self.bands[k - 1].resolution)
+            near, far = self._square_dist(s)
+            reach = near < fine.r_max
+            if not reach.any():
+                continue
+            kids = split_into_children(store_take(s, reach), fine.resolution)
+            kids = store_take(kids, touches_ring(key_centers(kids.keys, fine.resolution), fine.resolution,
+                                                 self.sensor_xy, fine))
             self.stores[k - 1] = add_missing(self.stores[k - 1], kids)
+            self.stores[k] = store_take(s, far >= fine.r_max)
 
     # add one filtered velodyne scan taken at time t with pose T_world_velo
     def integrate(self, points_velo: np.ndarray, t_world_velo: np.ndarray, t: float) -> None:
@@ -312,12 +340,17 @@ class TemporalFoveatedMap:
                                 bounds=(cx - r_out, cx + r_out, cy - r_out, cy + r_out))
         self.terrain = terrain
         for k, band in enumerate(self.bands):
-            pts = world[(r >= band.r_min) & (r < band.r_max)]
+            margin = band.resolution * np.sqrt(2.0)
+            pts = world[(r >= band.r_min - margin) & (r < band.r_max + margin)]
             if len(pts) == 0:
                 continue
-            box = (cx - band.r_max, cx + band.r_max, cy - band.r_max, cy + band.r_max)
+            reach = band.r_max + margin
+            box = (cx - reach, cx + reach, cy - reach, cy + reach)
             obs = scan_observation(pts, band.resolution, self.params.ground_percentile, bounds=box)
-            tz = terrain.sample(key_centers(obs.keys, band.resolution))
+            centers = key_centers(obs.keys, band.resolution)
+            keep = touches_ring(centers, band.resolution, self.sensor_xy, band)
+            obs = obs_take(obs, keep)
+            tz = terrain.sample(centers[keep])
             self.stores[k] = integrate_obs(self.stores[k], obs, tz, t, self.params)
 
     # rings around latest sensor as FoveatedLayers in world frame. unknown cells = NaN, count 0.
