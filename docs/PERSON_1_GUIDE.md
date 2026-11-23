@@ -8,12 +8,12 @@ A LiDAR on a car's roof gives ~120,000 3D points per scan, 10 scans per second (
 
 ## 2. Current state
 
-- **Map version 4** (`src/config.MAP_VERSION`):
+- **Map version 5** (`src/config.MAP_VERSION`):
   - v2 fixed data gaps at ring edges.
   - v3 added the `points` layer.
-  - v4 widened the ego box to x_max 2.8 m.
-  - v5 adds adaptive refinement: 20 cm hazard patches in the 25–50 m ring as an **overlay band**. Lookups there return 0.2 m resolution where a patch cell exists. Your labeler p95 rose to 29.0 ms (budget 30), partly from lookups visiting this band. Points from the recording car's own body (x 2.5–2.6 m, y ±0.5 m, z −0.9 m, in 93 % of scans) used to leave a trail of fake obstacles along the driven path.
-- **Latest benchmark numbers:** `docs/REPORT.md`, section "Map v4".
+  - v4 widened the ego box to x_max 2.8 m. Points from the recording car's own body (x 2.5–2.6 m, y ±0.5 m, z −0.9 m, in 93 % of scans) used to leave a trail of fake obstacles along the driven path.
+  - v5 adds adaptive refinement: 20 cm hazard patches in the 25–50 m ring as an **overlay band**. Lookups there return 0.2 m resolution where a patch cell exists. Your labeler p95 rose to 29.0 ms (budget 30), partly from lookups visiting this band.
+- **Latest benchmark numbers:** `docs/REPORT.md`, sections "Map v4" and "Map v5".
 - **Your two problems:**
   1. **Accuracy gap.** 0–25 m macro F1 on map v4 is **0.484 foveated + model vs 0.509 uniform + model** (gap 0.025; it was 0.046 on map v1).
      - Obstacle called traversable: 15.6 % on both.
@@ -69,15 +69,15 @@ python scripts/fetch_kitti_slice.py --seq 05 --start 0 --count 300 --out data/ki
 - `load_sequence` refuses a slice whose ground-truth poses climb more than 10 % of the path; seq 08 frames 0–99 fail this. If the seq 05 slice fails, pick another start (e.g. 1000) and note it.
 - Re-run the baseline and keep the output as your reference: `python -m scripts.benchmark > outputs/p1_baseline.txt`.
 
-### Step 1 — snapshots (frozen map v4)
+### Step 1 — snapshots (frozen current map version)
 
 ```bash
-python -m scripts.export_snapshots --seq data/kitti_long/sequences/00
+python -m scripts.export_snapshots --seq data/kitti_long/sequences/00   # writes outputs/snapshots/mapv5/...
 python -m scripts.export_snapshots --seq data/kitti_long/sequences/05
 python -m scripts.export_snapshots --seq data/kitti_long/sequences/08
 ```
 
-- Writes `outputs/snapshots/mapv4/<seq>_<first>-<last>/<scan>.npz`, every 5 scans from scan 10. About 150–200 MB per slice.
+- Writes `outputs/snapshots/mapv<N>/<seq>_<first>-<last>/<scan>.npz`, every 5 scans from scan 10. About 150–200 MB per slice.
 - `from src.temporal.snapshot import load_snapshot` gives `(fov, terrain, meta)`. Lookups match the live map exactly.
 - Feature experiments then run without re-running fusion. When Person 2 bumps `MAP_VERSION`, re-export.
 
