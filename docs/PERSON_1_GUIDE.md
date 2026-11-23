@@ -15,9 +15,9 @@ A LiDAR on a car's roof gives ~120,000 3D points per scan, 10 scans per second (
   - v5 adds adaptive refinement: 20 cm hazard patches in the 25–50 m ring as an **overlay band**. Lookups there return 0.2 m resolution where a patch cell exists. Your labeler p95 rose to 29.0 ms (budget 30), partly from lookups visiting this band.
 - **Latest benchmark numbers:** `docs/REPORT.md`, sections "Map v4" and "Map v5".
 - **Your two problems:**
-  1. **Accuracy gap.** 0–25 m macro F1 on map v4 is **0.484 foveated + model vs 0.509 uniform + model** (gap 0.025; it was 0.046 on map v1).
-     - Obstacle called traversable: 15.6 % on both.
-     - Labeler p95 is 27.7 ms against your 30 ms budget, so you have ~2 ms of headroom.
+  1. **Accuracy gap.** 0–25 m macro F1 on map v5 is **0.481 foveated + model vs 0.509 uniform + model** (gap 0.028; v4 0.484, v1 gap 0.046).
+     - Obstacle called traversable: 15.0 % foveated + model, 15.6 % uniform + model.
+     - Labeler p95 is 29.0 ms against your 30 ms budget (map v5), so you have ~1 ms of headroom: any new feature must be paid for.
   2. **Over-eager obstacles on flat road.** On the path the car actually drove, 80 % of the model's "obstacle" cells look like plain road to every other signal:
      - height over terrain median 0.25 m, below the 0.30 m line
      - map obstacle evidence (log-odds) negative
