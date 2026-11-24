@@ -126,15 +126,31 @@ RF_PARAMS = {"n_estimators": 8, "max_depth": 12, "min_samples_leaf": 50, "n_jobs
 # fit 4-class random forest on map-observed rows. NaN features handled natively.
 def fit_model(rows: dict) -> RandomForestClassifier:
     obs = rows["map_obs"]
-    model = RandomForestClassifier(**RF_PARAMS, class_weight="balanced", random_state=SEED)
+    model = RandomForestClassifier(**RF_PARAMS, class_weight="balanced_subsample", random_state=SEED)
     return model.fit(rows["X"][obs], rows["y"][obs])
 
 
-# model output: unknown where map saw nothing, classifier elsewhere
+# obstacle probability threshold: below this, pick next-best class (tuned on seq 05)
+OBST_PROB_T = 0.55
+
+
+# model output: unknown where map saw nothing, classifier elsewhere with proba gate + evidence gate
 def predict(model: RandomForestClassifier, X: np.ndarray, map_obs: np.ndarray) -> np.ndarray:
     out = np.full(len(X), UNKNOWN, dtype=np.int64)
     if map_obs.any():
-        out[map_obs] = model.predict(X[map_obs])
+        proba = model.predict_proba(X[map_obs])
+        pred = np.argmax(proba, axis=1).astype(np.int64)
+        # proba gate: obstacle prob below threshold -> pick next-best class
+        weak_obst = (pred == OBSTACLE) & (proba[:, OBSTACLE] < OBST_PROB_T)
+        if weak_obst.any():
+            alt = proba[weak_obst].copy()
+            alt[:, OBSTACLE] = -1.0
+            pred[weak_obst] = np.argmax(alt, axis=1).astype(np.int64)
+        # evidence gate: obstacle without positive map evidence -> downgrade to hazardous
+        lo_idx = FEATURES.index("logodds")
+        lo = X[map_obs, lo_idx]
+        pred[(pred == OBSTACLE) & ((lo <= 0) | np.isnan(lo))] = 1
+        out[map_obs] = pred
     return out
 
 
@@ -183,7 +199,15 @@ def main() -> None:
     print()
 
     model = fit_model(train)
-    joblib.dump({"model": model, "features": FEATURES, "classes": CLASS_NAMES}, args.out / "hazard_rf.joblib")
+    joblib.dump({
+        "model": model,
+        "features": FEATURES,
+        "classes": CLASS_NAMES,
+        "version": 1,
+        "map_version": config.MAP_VERSION,
+        "train_slice": str(args.train),
+        "val_slice": "",
+    }, args.out / "hazard_rf.joblib")
 
     p_train = predict(model, train["X"], train["map_obs"])
     print(f"TRAIN (seq {args.train.name}) model macro F1 {f1_score(train['y'], p_train, labels=LABELS, average='macro'):.3f}"

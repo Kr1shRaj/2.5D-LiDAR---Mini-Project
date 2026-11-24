@@ -1,3 +1,4 @@
+import warnings
 from collections.abc import Callable
 
 import numpy as np
@@ -22,9 +23,11 @@ FEATURES = [
     "age",  # seconds since last seen
     "logodds",  # obstacle evidence
     "inherited",  # 1 = placeholder from coarse parent
+    "density",  # laser points per m2 in cell: points / resolution^2
+    "rel_local",  # z max over immediate neighbour ground (slope-immune obstacle height)
 ]
 LAYERS = ["z_mean", "z_max", "z_min", "ground", "z_var", "count", "weight", "last_seen", "logodds", "inherited",
-          "resolution"]
+          "resolution", "points"]
 
 Sampler = Callable[[np.ndarray, list[str]], dict[str, np.ndarray]]
 
@@ -62,6 +65,11 @@ def cell_features(sample_many: Sampler, xy: np.ndarray, terrain_z: np.ndarray, s
     both_nan = np.isnan(step_x) & np.isnan(step_y)
     step = np.where(both_nan, np.nan, np.fmax(step_x, step_y))
     slope = np.hypot(g["X+"] - g["X-"], g["Y+"] - g["Y-"]) / (2 * SLOPE_D_M)
+    # immediate 4-neighbour ground median cancels road slopes across 40 cm
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        nbr_ground = np.nanmedian(ground[:4], axis=0)
+    local_ground = np.where(np.isnan(nbr_ground), c["ground"], nbr_ground)
     return {
         "rel_mean": c["z_mean"] - terrain_z,
         "rel_max": c["z_max"] - terrain_z,
@@ -77,6 +85,8 @@ def cell_features(sample_many: Sampler, xy: np.ndarray, terrain_z: np.ndarray, s
         "age": t_now - c["last_seen"],
         "logodds": c["logodds"],
         "inherited": c["inherited"],
+        "density": np.nan_to_num(c["points"], nan=0.0) / np.where(c["resolution"] > 0, c["resolution"] ** 2, 1.0),
+        "rel_local": c["z_max"] - local_ground,
     }
 
 

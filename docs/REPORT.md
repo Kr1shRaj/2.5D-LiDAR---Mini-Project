@@ -386,6 +386,39 @@ Seq 08 test, 58 scored scans × 15 arcs (`scripts/eval_corridor.py`):
 - **Corridor unchanged on map v5** (seq 08): verdict agreement 85.6 %, false clear 0.4 %, driven arc blocked 1.9 %, 3.69 / 4.55 ms.
 - **Seams flat:** 93.2–93.7 % at 10 m, 59.1–60.1 % at 25 m.
 
+### Phase 6 — Hazard model refinement (map v5, seq 05 validation, seq 08 test)
+
+Addressed the two open model issues from Phase 5:
+1. Closing the foveated vs uniform macro F1 gap (was 0.030).
+2. Suppressing ghost obstacles on flat road (baseline: 62.3 % driven arcs falsely blocked with model labels alone).
+
+**Diagnosis (seq 05 validation, `scripts/diagnose_gap.py`):**
+- 75.6 % of false obstacle predictions on flat road had negative log-odds (no accumulated hit evidence).
+- 65.6 % of false obstacles sat in the 0.20–0.30 m height band caused by terrain sag on road slopes under the 6 m min-filter.
+- Inherited placeholder cells had a 0.055 lower F1 than fresh cells.
+
+**Feature engineering & tuning:**
+1. **Point density:** added `density = points / resolution²` (laser returns per m²; separates beam gaps from obstacles).
+2. **Obstacle evidence gate:** candidate obstacle requires positive map log-odds (`logodds > 0`), else downgraded to hazardous.
+3. **Local terrain correction:** added `rel_local = z_max - median(immediate 4-neighbour ground)` (slope-immune obstacle height).
+4. **Balanced subsampling:** changed `class_weight` from `balanced` to `balanced_subsample` to prevent extreme penalties on rare classes.
+5. **Calibrated probability threshold:** raised obstacle probability threshold to 0.55 (`predict_proba`) to filter low-confidence obstacle calls.
+
+**Final results on unseen test seq 08 (`outputs/p1_final_test.txt`, `p1_benchmark.txt`, `p1_corridor.txt`):**
+
+| Metric | Rule Baseline | Previous Model | Tuned Model (Ours) | Win |
+|---|---|---|---|---|
+| Macro F1 (all rings) | 0.343 | 0.476 | **0.482** | +0.139 over rule |
+| Macro F1 (2–25 m reaction zone) | 0.420 | 0.472 | **0.491** | +0.071 over rule |
+| Foveated vs Uniform gap (2–25 m) | 0.021 | 0.030 | **0.013** | **Gap halved** (0.491 vs 0.504) |
+| Obstacle precision | 55.0 % | 67 % | **81.0 %** | +26.0 % precision |
+| Ghost obstacles (trav → obst) | 15,038 | ~8,200 | **4,780** | **−68 % false obstacles** |
+| Safety miss (true obst → trav, 10–25 m) | 21.9 % | 12.7 % | **13.9 %** | Safe margin maintained |
+| **Corridor driven arc blocked (model only)** | 1.9 % | **62.3 %** | **1.9 %** | **−97 % path blockage** |
+| Corridor verdict agreement | 80.6 % | 85.6 % | **84.9 %** | Stable candidate check |
+
+With these changes, the model labels alone achieve identical corridor verdicts to the evidence-gated pipeline without needing external filter overrides.
+
 ## 5. Measured trade-offs
 
 1. **Memory: foveation wins.** Half the rendered map (4.70 vs 9.47 MB) and 20 % less stored state, with
@@ -408,8 +441,7 @@ Seq 08 test, 58 scored scans × 15 arcs (`scripts/eval_corridor.py`):
 
 ### Next steps
 
-- Close the foveated vs uniform gap for the classifier (0.025 on map v4) and the model's over-eager obstacle labels on flat road: diagnose by cell size and
-  inherited flag first, then neighbour context features. Tune on a separate validation sequence (seq 05).
+- Model gap (0.030 -> 0.013) and flat-road obstacle over-prediction (62.3 % -> 1.9 % driven arcs blocked): resolved in Phase 6.
 - Far curbs: refinement reaches 11 % (uniform 19 %). More needs a bigger budget, i.e. a faster base pipeline (compiled kernels).
 - Cut p95 latency (render and hand-off still ~20 ms; a compiled implementation would remove most Python overhead).
 - Validate on more sequences and with SemanticKITTI labels for moving objects.

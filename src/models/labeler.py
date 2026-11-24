@@ -1,9 +1,28 @@
 import numpy as np
+import joblib
 
+from src import config
 from src.mapping.foveated_grid import BandLayers, FoveatedLayers
-from src.models.features import cell_features, feature_matrix
+from src.models.features import FEATURES, cell_features, feature_matrix
+from src.models.targets import OBSTACLE
 from src.temporal.fusion import encode_keys
 from src.temporal.terrain import Terrain
+
+
+# load model joblib and reject mismatched features or map version
+def load_model(path: str):
+    blob = joblib.load(path)
+    if not isinstance(blob, dict) or "model" not in blob:
+        raise ValueError(f"bad model file: expected dict with 'model' key, got {type(blob)}")
+    if "features" in blob and list(blob["features"]) != list(FEATURES):
+        raise ValueError(
+            f"feature mismatch: model has {blob['features']}, code has {list(FEATURES)}"
+        )
+    if "map_version" in blob and blob["map_version"] != config.MAP_VERSION:
+        raise ValueError(
+            f"map version mismatch: model trained on v{blob['map_version']}, code is v{config.MAP_VERSION}"
+        )
+    return blob["model"]
 
 
 # world keys + centre xy of selected cells of one rendered band (world-aligned lattice)
@@ -60,7 +79,17 @@ class HazardLabeler:
         xy_all = np.vstack([d[3] for d in todo]) if todo else np.empty((0, 2))
         if len(xy_all):
             f = cell_features(fov.sample_many, xy_all, terrain.sample(xy_all), np.array([cx, cy]), t)
-            pred = self.model.predict(feature_matrix(f))
+            proba = self.model.predict_proba(feature_matrix(f))
+            pred = np.argmax(proba, axis=1).astype(np.int64)
+            # proba gate: obstacle prob below 0.55 -> pick next-best class
+            weak = (pred == OBSTACLE) & (proba[:, OBSTACLE] < 0.55)
+            if weak.any():
+                alt = proba[weak].copy()
+                alt[:, OBSTACLE] = -1.0
+                pred[weak] = np.argmax(alt, axis=1).astype(np.int64)
+            # evidence gate: obstacle without positive map evidence -> downgrade to hazardous
+            lo = f["logodds"]
+            pred[(pred == OBSTACLE) & ((lo <= 0) | np.isnan(lo))] = 1
             at = 0
             for k, cur, need, xy in todo:
                 cur["label"][need] = pred[at : at + len(xy)]

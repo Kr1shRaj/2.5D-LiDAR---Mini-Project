@@ -69,10 +69,19 @@ class CountingModel:
     # fake model: label = 1 for every row, counts rows seen
     def __init__(self) -> None:
         self.rows = 0
+        self.classes_ = np.array([0, 1, 2, 3])
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         self.rows += len(X)
         return np.ones(len(X), dtype=np.int64)
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        self.rows += len(X)
+        # class 1 at 90% confidence
+        p = np.zeros((len(X), 4))
+        p[:, 1] = 0.9
+        p[:, 0] = 0.1
+        return p
 
 
 def test_labeler_relabels_only_touched_cells_in_zone() -> None:
@@ -107,3 +116,48 @@ def test_labeler_relabels_only_touched_cells_in_zone() -> None:
     assert lab.update(m.render(), m.terrain, 0.3) > first / 2
     got = lab.labels_at(m.render(), np.array([[1.0, 1.0], [10.0, 0.0]]))
     assert got.tolist() == [1, -1]  # inside zone labelled, outside zone left to rule
+
+
+def test_loader_refuses_mismatched_features(tmp_path) -> None:
+    import joblib
+    from src.models.labeler import load_model
+
+    # good file: matches current FEATURES and MAP_VERSION
+    from src import config
+    good = {"model": "dummy", "features": list(FEATURES), "map_version": config.MAP_VERSION}
+    p = tmp_path / "good.joblib"
+    joblib.dump(good, p)
+    assert load_model(str(p)) == "dummy"
+
+    # bad features
+    bad_feat = {"model": "dummy", "features": ["wrong_feat"]}
+    p2 = tmp_path / "bad_feat.joblib"
+    joblib.dump(bad_feat, p2)
+    with pytest.raises(ValueError, match="feature mismatch"):
+        load_model(str(p2))
+
+    # bad map version
+    bad_mv = {"model": "dummy", "features": list(FEATURES), "map_version": -999}
+    p3 = tmp_path / "bad_mv.joblib"
+    joblib.dump(bad_mv, p3)
+    with pytest.raises(ValueError, match="map version mismatch"):
+        load_model(str(p3))
+
+
+# unobserved cells must return nan, never silent 0.0
+def test_unobserved_cell_nan_never_zero(yard) -> None:
+    empty_xy = np.array([[-4.95, -4.95]])  # empty patch in fixture
+    f = cell_features(grid_sampler(yard), empty_xy, np.array([GROUND_Z]), np.zeros(2), 0.0)
+    for k in ("rel_max", "rel_mean", "roughness", "relief", "rel_local"):
+        assert np.isnan(f[k][0]), f"feature {k} was not NaN for unobserved cell"
+
+
+# seeded training produces identical trees and predictions
+def test_seeded_training_is_reproducible() -> None:
+    from sklearn.ensemble import RandomForestClassifier
+    rng = np.random.default_rng(seed=42)
+    X = rng.normal(size=(100, len(FEATURES)))
+    y = rng.choice([0, 1, 2, 3], size=100)
+    m1 = RandomForestClassifier(n_estimators=4, max_depth=4, random_state=0).fit(X, y)
+    m2 = RandomForestClassifier(n_estimators=4, max_depth=4, random_state=0).fit(X, y)
+    assert np.array_equal(m1.predict(X), m2.predict(X))

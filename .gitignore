@@ -222,3 +222,5 @@ __marimo__/
 # kitti data + run outputs. never commit.
 data/
 outputs/
+.mplconfig/
+irrelevant/
