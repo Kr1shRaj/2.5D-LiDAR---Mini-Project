@@ -18,6 +18,26 @@ export async function loadManifest(base) {
   return m;
 }
 
+// scene list written by export scripts next to replay folders; null when missing (old exports)
+export async function loadIndex(root) {
+  try {
+    const r = await fetch(new URL('index.json', root));
+    return r.ok ? (await r.json()).scenes : null;
+  } catch {
+    return null;
+  }
+}
+
+// point blob (src/viz/replay.py encode_points): u32 n, i2 dx, i2 dy, i2 z (cm), i1 h (2 cm, -128 = none)
+export function decodePoints(buf) {
+  const n = new Uint32Array(buf, 0, 1)[0];
+  let at = 4;
+  const take = (T) => { const a = new T(buf, at, n); at += pad4(n * T.BYTES_PER_ELEMENT); return a; };
+  const p = { n, dx: take(Int16Array), dy: take(Int16Array), z: take(Int16Array), h: take(Int8Array) };
+  if (at !== buf.byteLength) throw new Error(`point blob: ${buf.byteLength} bytes, layout says ${at}`);
+  return p;
+}
+
 // gzip bytes -> ArrayBuffer via browser DecompressionStream
 async function gunzip(buf) {
   const s = new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'));
@@ -84,11 +104,13 @@ export class FrameStore {
     if (f) return Promise.resolve(f);
     if (this.pending.has(i)) return this.pending.get(i);
     const meta = this.m.frames[i];
-    const p = fetch(new URL(meta.file, this.base))
-      .then((r) => { if (!r.ok) throw new Error(`frame ${i}: HTTP ${r.status}`); return r.arrayBuffer(); })
-      .then(gunzip)
-      .then((buf) => {
+    const grab = (file) => fetch(new URL(file, this.base))
+      .then((r) => { if (!r.ok) throw new Error(`frame ${i}: HTTP ${r.status} for ${file}`); return r.arrayBuffer(); })
+      .then(gunzip);
+    const p = Promise.all([grab(meta.file), meta.points ? grab(meta.points) : null])
+      .then(([buf, pts]) => {
         const fr = decodeFrame(buf, meta, this.m);
+        fr.points = pts ? decodePoints(pts) : null;
         this.done.set(i, fr);
         while (this.done.size > this.keep) this.done.delete(this.done.keys().next().value);
         return fr;

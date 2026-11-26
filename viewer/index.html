@@ -9,7 +9,12 @@
 <body>
 <header>
   <h1>Foveated 2.5D map replay</h1>
-  <span id="slice" class="muted"></span>
+  <span id="badge" class="badge"></span>
+  <label>Scene <select id="scene" title="Replay folders listed in outputs/replay/index.json"></select></label>
+  <span class="tabs" role="tablist">
+    <button id="tab2d" role="tab" aria-selected="true">2D map</button>
+    <button id="tab3d" role="tab" aria-selected="false">3D chase</button>
+  </span>
   <span class="spacer"></span>
   <label>Fill
     <select id="fill">
@@ -19,7 +24,7 @@
       <option value="confidence">Confidence + hand-off</option>
     </select>
   </label>
-  <label>View
+  <label class="only2d">View
     <select id="viewmode">
       <option value="ego">Car centred, heading up</option>
       <option value="follow">Car centred, world axes</option>
@@ -31,17 +36,27 @@
     <label><input type="checkbox" id="path" checked> Path</label>
     <label><input type="checkbox" id="car" checked> Car</label>
     <label><input type="checkbox" id="corridor" checked> Corridor</label>
+    <label title="Current scan LiDAR points, every 4th"><input type="checkbox" id="points"> Points</label>
+    <label title="Flash cells where ghost clearing dropped an old obstacle"><input type="checkbox" id="ghosts" checked> Ghost clears</label>
+    <label title="Outline 20 cm refined hazard patches in the 25-50 m ring"><input type="checkbox" id="refined" checked> Refined</label>
   </span>
   <label>Events
     <select id="events" title="Frames where straight arc is blocked and another arc is a candidate"></select>
   </label>
 </header>
 
+<div id="simbanner" hidden>SIMULATION DEMO (NON-BENCHMARK) · synthetic road, synthetic LiDAR, virtual car follows the picked arc · not a result</div>
+
 <main>
   <section id="stage">
-    <canvas id="map"></canvas>
-    <div id="legend"></div>
-    <div id="status" hidden></div>
+    <div id="views">
+      <canvas id="map"></canvas>
+      <div id="three" hidden></div>
+      <div id="legend"></div>
+      <div id="verdict" class="card"></div>
+      <div id="status" hidden></div>
+    </div>
+    <canvas id="strip" height="40" title="Per scan: live straight verdict · reference straight verdict · candidate vs driver (cyan agree, purple differ). White ticks = events. Click to seek."></canvas>
     <div id="timeline">
       <button id="prev" title="Step back (←)">◀︎</button>
       <button id="play" title="Play / pause (space)">▶︎</button>
@@ -61,13 +76,16 @@
 
   <aside id="panel">
     <section>
+      <h2>Corridor decision <span class="muted small">candidate check only</span></h2>
+      <div id="h-corridor" class="kv"></div>
+      <p class="small muted" id="cor-note">Arcs: green clear · orange caution · red blocked (✕ = first obstacle cluster).
+        Cyan = picked candidate. Dashed white = path the driver really took next. Nothing is steered.</p>
+      <p class="small muted">Strip under map, top to bottom: live straight verdict · reference straight verdict ·
+        candidate vs driver (<span style="color:#39d0f0">cyan</span> agree, <span style="color:#a371f7">purple</span> differ).</p>
+    </section>
+    <section>
       <h2>Pipeline per scan <span class="muted small">measured at export</span></h2>
-      <div class="kv">
-        <span>Map (integrate + render)</span><b id="h-map" class="mono"></b>
-        <span>Hazard labeler</span><b id="h-label" class="mono"></b>
-        <span>Corridor check</span><b id="h-cor" class="mono"></b>
-        <span>Total</span><b id="h-total" class="mono"></b>
-      </div>
+      <div class="bars" id="h-bars"></div>
       <canvas id="spark" height="56" title="Total ms per scan. Click to seek."></canvas>
       <p class="small muted" id="h-summary"></p>
     </section>
@@ -78,15 +96,11 @@
         <span>Rendered layers memory</span><b id="h-render" class="mono"></b>
         <span>Cells model re-labelled</span><b id="h-labelled" class="mono"></b>
         <span>Occupied cells (log-odds &gt; 0)</span><b id="h-occ" class="mono"></b>
+        <span><span class="chip" style="background:#ff4fd8"></span>Ghost cells cleared this scan</span><b id="h-ghost" class="mono"></b>
+        <span><span class="chip" style="border:2px solid #39d0f0"></span>Refined patch cells (20 cm)</span><b id="h-refined" class="mono"></b>
       </div>
       <div id="h-bands" class="kv"></div>
       <div id="h-classes" class="kv"></div>
-    </section>
-    <section>
-      <h2>Corridor check <span class="muted small">candidate only</span></h2>
-      <div id="h-corridor" class="kv"></div>
-      <p class="small muted">Arcs: green clear · orange caution · red blocked (✕ = first obstacle cluster).
-        Cyan = picked candidate. Dashed white = path the driver really took next. Nothing is steered.</p>
     </section>
     <section>
       <h2>Cell inspector</h2>
@@ -96,7 +110,7 @@
       <p>Replay: <b id="h-fps" class="mono">–</b> frames/s in browser. Browser replay speed is not pipeline speed.</p>
       <p id="h-cpu"></p>
       <p>Candidate hazard labels from geometry and a small model. Not collision prediction. Research prototype.</p>
-      <p>Keys: space play · ←/→ step · shift ±10 · 1–4 fill · V view · R reset · N/P next/prev event.</p>
+      <p>Keys: space play · ←/→ step · shift ±10 · 1–4 fill · V view · T 2D/3D · R reset · N/P next/prev event.</p>
     </section>
   </aside>
 </main>

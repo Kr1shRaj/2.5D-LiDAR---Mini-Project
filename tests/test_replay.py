@@ -6,8 +6,10 @@ from src.viz.replay import (
     COLUMNS,
     band_nbytes,
     decode_frame,
+    decode_points,
     dequantize,
     encode_band,
+    encode_points,
     export_cells,
     nan_sentinel,
     quantize,
@@ -94,3 +96,19 @@ def test_export_cells_probe_hits_own_cell(fov) -> None:
     # outer band: disk ends at 8 m, ring 8-10 m stays unobserved, never exported
     sel, probe = export_cells(fov.bands[1], fov.center)
     assert np.hypot(*probe.T).max() < 8.3
+
+
+# points: sensor-relative cm round trip, NaN height stays NaN (never 0), size matches layout
+def test_points_round_trip() -> None:
+    rng = np.random.default_rng(seed=5)
+    sensor = np.array([412.3, -95.7])
+    world = np.column_stack([sensor + rng.uniform(-50, 50, (101, 2)), rng.uniform(-3, 3, 101)])
+    h = rng.uniform(-0.5, 2.0, 101)
+    h[[0, 7]] = np.nan
+    back = decode_points(encode_points(world, sensor, h))
+    assert np.allclose(back["dx"] + sensor[0], world[:, 0], atol=0.006)
+    assert np.allclose(back["dy"] + sensor[1], world[:, 1], atol=0.006)
+    assert np.allclose(back["z"], world[:, 2], atol=0.006)
+    assert np.isnan(back["h"][[0, 7]]).all()
+    ok = ~np.isnan(h)
+    assert np.allclose(back["h"][ok], h[ok], atol=0.011)

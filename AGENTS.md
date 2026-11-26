@@ -48,8 +48,30 @@ Research prototype only. Not production vehicle collision-avoidance system.
   - `src/viz/`: raw cloud overlay, elevation heatmaps, resolution band viz.
   - `src/planning/`: candidate corridor check (constant-curvature arcs scored on the map). Reports
     blocked / caution / clear only. Never steers, plans for, or controls a vehicle; never "collision avoidance".
+    (Only the isolated simulation demo below may feed its pick to a virtual car.)
   - `viewer/`: browser replay (HTML + plain JS, no build). Pure consumer of files from
     `scripts/export_replay.py`. Never imports or calls `src/`; delete it and core still works.
+    - `viewer/vendor/`: third-party JS copied in at one pinned version (e.g. `three.module.min.js`), with its
+      licence file and version in `viewer/vendor/README.md`. No CDN at runtime, no npm, no build step.
+      Never edit vendored files by hand; replace the whole file to upgrade.
+  - `src/sim/` + `scripts/run_sim.py`: **SIMULATION DEMO (NON-BENCHMARK)**, the one exception below.
+
+## Simulation demo exception (non-benchmark)
+
+A clearly separated simulation mode exists only so a viewer can watch the pipeline react on a
+synthetic multi-turn road. Rules, all of them hard:
+
+- **Lives only in** `src/sim/`, `scripts/run_sim.py` and its outputs `outputs/sim/`. Nothing outside these
+  imports `src/sim/`. Viewer shows it only in a tab badged **"SIMULATION DEMO (NON-BENCHMARK)"**, on every frame.
+- **Allowed inside sim only:** synthetic road + placed obstacles, synthetic LiDAR points raycast from that
+  scene, and a closed loop where a virtual car follows the corridor check's picked arc.
+- **Sim world geometry is fabricated by design** and says so: every sim output carries `"synthetic": true`.
+  The map pipeline itself stays unchanged: same fusion, same NaN-for-unobserved, same corridor code.
+- **Never mixed with real numbers.** `scripts/benchmark.py`, `scripts/eval_*.py`, `docs/REPORT.md`
+  metrics, model training / tuning and snapshots use real KITTI only. Sim scans never enter training,
+  validation or test data. A sim number, if quoted at all, is labelled "simulation demo, not a result".
+- **Wording still applies.** Sim is "demo steering of a virtual car in a synthetic scene".
+  Never claim the real system steers, avoids collisions, or is validated for vehicle control.
 - **Coordinate frames are sacred.** Sensor (velodyne) frame, camera frame, and world frame
   must never be mixed silently. Every transform uses explicit calibration (`Tr`, `poses.txt`).
 - **Stubs raise `NotImplementedError`.** Never return fabricated or fake elevation values.

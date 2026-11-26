@@ -67,6 +67,9 @@ export const FILLS = {
   },
 };
 
+// refined-patch outline layer: every observed overlay cell in one colour, drawn translucent over the map
+export const PATCH_FILL = { cell: () => pack(rgb('#39d0f0'), 255) };
+
 // value -> lut index, clamped
 const ramp = (v, f) => Math.max(0, Math.min(255, Math.round(((v - f.lo) / (f.hi - f.lo)) * 255)));
 
@@ -78,7 +81,7 @@ export function bandImage(band, fill, ctx) {
   const g = cv.getContext('2d');
   const img = g.createImageData(band.nx, band.ny);
   const px = new Uint32Array(img.data.buffer);
-  const f = FILLS[fill], { mask, cols, ny, nx } = band;
+  const f = typeof fill === 'string' ? FILLS[fill] : fill, { mask, cols, ny, nx } = band;
   let j = 0;
   for (let b = 0; b < mask.length; b++) {
     const m = mask[b];
@@ -130,3 +133,11 @@ export function arcWorld(k, len, step, pose) {
 }
 
 export const VERDICT_COLORS = ['#3fb950', '#f0883e', '#f85149'];  // clear, caution, blocked
+
+// point colour by height over local terrain (m): road grey, low step amber, obstacle height red, no terrain blue-grey
+export function pointColor(h) {
+  if (Number.isNaN(h)) return '#6e7681';
+  if (h < 0.15) return '#9da7b3';
+  if (h < 0.3) return '#f0b72f';
+  return '#ff6a5a';
+}

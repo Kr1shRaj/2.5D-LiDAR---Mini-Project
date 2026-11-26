@@ -1,8 +1,15 @@
 // app: timeline, view state, input, HUD, inspector. reads replay files only, never calls python.
-import { FrameStore, loadManifest, slotOf, value } from './data.js';
-import { CLASS_COLORS, FILLS, VERDICT_COLORS, arcWorld, bandImage, legendHtml, nearGround, screenToWorld, worldToScreen } from './view.js';
+import { FrameStore, loadIndex, loadManifest, slotOf, value } from './data.js';
+import { drawStrip, verdictHtml } from './story.js';
+import {
+  CLASS_COLORS, FILLS, PATCH_FILL, VERDICT_COLORS, arcWorld, bandImage, legendHtml, nearGround, pointColor, screenToWorld,
+  worldToScreen,
+} from './view.js';
 
-const DEFAULT_REPLAY = '../outputs/replay/08_1500-1799/';
+const REPLAY_ROOT = '../outputs/replay/';
+const DEFAULT_FOLDERS = ['08_2400-2699', '08_1500-1799'];  // first one present wins when no ?replay=
+const GHOST_HOLD = 10;  // ghost clears stay visible this many scans, fading
+const BUDGET = { map: 65, label: 30, corridor: 5, total: 100 };  // ms p95 budgets, docs/INTERFACES.md
 const PREFETCH = 24;
 const $ = (id) => document.getElementById(id);
 
@@ -19,10 +26,40 @@ function status(msg) {
   $('status').textContent = msg ?? '';
 }
 
-// replay folder from ?replay=, always ending in /
-function replayBase() {
-  const p = new URLSearchParams(location.search).get('replay') ?? DEFAULT_REPLAY;
+// replay folder from ?replay= else first default folder listed in scene index, always ending in /
+function replayBase(scenes) {
+  let p = new URLSearchParams(location.search).get('replay');
+  if (!p) {
+    const have = new Set((scenes ?? []).map((s) => s.folder));
+    const pick = DEFAULT_FOLDERS.find((f) => have.has(f)) ?? scenes?.[0]?.folder ?? DEFAULT_FOLDERS[1];
+    p = REPLAY_ROOT + pick;
+  }
   return new URL(p.endsWith('/') ? p : p + '/', location.href);
+}
+
+// scene menu: every folder in index.json; picking one reloads with ?replay=
+function fillScenes(scenes, base) {
+  const sel = $('scene');
+  const here = base.href;
+  const list = scenes ?? [];
+  const opts = list.map((s) => {
+    const url = new URL(REPLAY_ROOT + s.folder + '/', location.href).href;
+    return `<option value="${REPLAY_ROOT + s.folder}/" ${url === here ? 'selected' : ''}>${s.synthetic ? 'SIM · ' : ''}${s.scene}</option>`;
+  });
+  if (!list.some((s) => new URL(REPLAY_ROOT + s.folder + '/', location.href).href === here)) {
+    opts.unshift(`<option selected>${man.scene ?? `seq ${man.sequence} ${man.scans[0]}-${man.scans[1]}`}</option>`);
+  }
+  sel.innerHTML = opts.join('');
+  sel.onchange = (e) => { location.search = `?replay=${encodeURIComponent(e.target.value)}`; };
+}
+
+// real vs simulation badge + banner. sim replays carry manifest.synthetic = true
+function fillBadge() {
+  const sim = !!man.synthetic;
+  $('badge').textContent = sim ? 'SIMULATION DEMO (NON-BENCHMARK)' : 'REAL KITTI REPLAY';
+  $('badge').className = `badge ${sim ? 'sim' : 'real'}`;
+  $('simbanner').hidden = !sim;
+  if (sim) $('cor-note').textContent = 'Synthetic scene. Virtual car follows the cyan picked arc in closed loop. Not a result.';
 }
 
 // view params for frame: car centred (heading up or world axes) or world fixed anchor
@@ -81,6 +118,14 @@ function draw() {
     g.restore();
   }
   const lw = (px) => px / st.s;  // world units per screen px (uniform scale)
+  if ($('refined').checked) {
+    const pimgs = (fr.images.patch ??= fr.bands.map((b) => (b.overlay ? bandImage(b, PATCH_FILL, fillCtx(fr)) : null)));
+    g.globalAlpha = 0.65;
+    fr.bands.forEach((b, k) => { if (pimgs[k]) g.drawImage(pimgs[k], b.x_min, b.y_min, b.nx * b.res, b.ny * b.res); });
+    g.globalAlpha = 1;
+  }
+  if ($('points').checked && fr.points) drawPoints(g, fr, lw);
+  if ($('ghosts').checked) drawGhosts(g, fr.meta, lw);
 
   if ($('path').checked) {
     const P = man.frames.map((f) => f.pose);
@@ -157,6 +202,38 @@ function draw() {
     g.textAlign = 'right';
     g.fillText('loading frame…', W - 12, 20);
   }
+}
+
+// current scan points as dots, coloured by height over terrain. world = sensor xy + stored offset
+function drawPoints(g, fr, lw) {
+  const p = fr.points, [sx, sy] = fr.meta.pose, r = lw(1.6);
+  const groups = new Map();
+  for (let j = 0; j < p.n; j++) {
+    const h = p.h[j] === -128 ? NaN : p.h[j] * 0.02, c = pointColor(h);
+    let a = groups.get(c);
+    if (!a) groups.set(c, (a = []));
+    a.push(j);
+  }
+  for (const [c, idx] of groups) {
+    g.fillStyle = c;
+    g.globalAlpha = c === '#9da7b3' ? 0.45 : 0.95;
+    for (const j of idx) g.fillRect(sx + p.dx[j] * 0.01 - r / 2, sy + p.dy[j] * 0.01 - r / 2, r, r);
+  }
+  g.globalAlpha = 1;
+}
+
+// cells ghost clearing emptied in last GHOST_HOLD scans: magenta squares, fading with age
+function drawGhosts(g, meta, lw) {
+  const side = Math.max(0.3, lw(3));
+  for (let a = GHOST_HOLD - 1; a >= 0; a--) {
+    const f = man.frames[meta.i - a];
+    if (!f?.cleared?.length) continue;
+    const [sx, sy] = f.pose;
+    g.globalAlpha = 0.9 * (1 - a / GHOST_HOLD);
+    g.fillStyle = '#ff4fd8';
+    for (const [dx, dy] of f.cleared) g.fillRect(sx + dx - side / 2, sy + dy - side / 2, side, side);
+  }
+  g.globalAlpha = 1;
 }
 
 // total pipeline ms of frame (corridor only in replays that have it)
@@ -237,28 +314,23 @@ function drawCorridor(g, meta, lw) {
   }
 }
 
-// corridor HUD rows: straight verdict, picked candidate, verdict counts
+// corridor card on map + side rows
 function corridorHud(meta) {
-  const el = $('h-corridor');
-  if (!man.corridor || !meta.corridor) {
-    el.innerHTML = '<span class="muted small">No corridor data in this replay. Re-export.</span>';
-    return;
-  }
-  const c = man.corridor, cor = meta.corridor, s = c.straight, row = (k, v) => `<span>${k}</span><b class="mono">${v}</b>`;
-  const desc = (a) => {
-    const k = c.curvatures[a];
-    return Math.abs(k) < 1e-9 ? 'straight' : `${k > 0 ? 'left' : 'right'}, R ${Math.abs(1 / k).toFixed(0)} m`;
-  };
-  const st = c.verdicts[cor.v[s]].toUpperCase();
-  let h = row('Straight', cor.v[s] === 2 ? `${st} at ${cor.b[s].toFixed(1)} m` : st);
-  h += row('Candidate', cor.pick >= 0 ? `${desc(cor.pick)} · ${c.verdicts[cor.v[cor.pick]]}` : 'NO CLEAR CANDIDATE');
-  if (cor.pick >= 0) {
-    h += row('Candidate clear length', `${cor.b[cor.pick].toFixed(1)} m`);
-    h += row('Candidate unknown / hazard', `${(cor.u[cor.pick] * 100).toFixed(0)} % / ${(cor.h[cor.pick] * 100).toFixed(0)} %`);
-  }
-  const n = [0, 1, 2].map((v) => cor.v.filter((x) => x === v).length);
-  h += row('Arcs clear / caution / blocked', `${n[0]} / ${n[1]} / ${n[2]}`);
-  el.innerHTML = h;
+  const { card, rows } = verdictHtml(man, meta);
+  $('verdict').innerHTML = $('corridor').checked ? card : '';
+  $('h-corridor').innerHTML = rows;
+}
+
+// pipeline ms bars against per-part budgets
+function msBars(meta) {
+  const parts = [['Map', meta.map_ms, BUDGET.map], ['Labeler', meta.label_ms, BUDGET.label],
+    ['Corridor', meta.corridor_ms, BUDGET.corridor], ['Total', totalMs(meta), BUDGET.total]];
+  $('h-bars').innerHTML = parts.map(([k, v, b]) => {
+    if (v === undefined) return `<span>${k}</span><span class="bar"></span><b class="mono">–</b>`;
+    const pct = Math.min(100, (v / b) * 100);
+    return `<span>${k}</span><span class="bar" title="budget ${b} ms p95"><i class="${v > b ? 'over' : ''}" style="width:${pct}%"></i></span>` +
+      `<b class="mono ${v > b ? 'over' : ''}">${v.toFixed(1)} / ${b} ms</b>`;
+  }).join('');
 }
 
 // fill event bookmark menu from manifest
@@ -347,12 +419,10 @@ function inspect() {
 function hud(meta) {
   const tot = totalMs(meta);
   $('frameno').textContent = `${meta.i + 1}/${man.frames.length} · scan ${meta.scan} · ${(meta.t - man.frames[0].t).toFixed(1)} s`;
-  $('h-map').textContent = `${meta.map_ms.toFixed(1)} ms`;
-  $('h-label').textContent = `${meta.label_ms.toFixed(1)} ms`;
-  $('h-total').textContent = `${tot.toFixed(1)} ms`;
-  $('h-total').classList.toggle('over', tot > 100);
-  $('h-cor').textContent = meta.corridor_ms !== undefined ? `${meta.corridor_ms.toFixed(1)} ms` : '–';
+  msBars(meta, tot);
   corridorHud(meta);
+  $('h-ghost').textContent = meta.cleared ? meta.cleared.length.toLocaleString() : '–';
+  $('h-refined').textContent = meta.refined !== undefined ? meta.refined.toLocaleString() : '–';
   $('h-store').textContent = `${meta.store_mb.toFixed(2)} MB`;
   $('h-render').textContent = `${meta.render_mb.toFixed(2)} MB`;
   $('h-labelled').textContent = meta.labelled.toLocaleString();
@@ -366,6 +436,8 @@ function hud(meta) {
     `<span><span class="chip" style="background:${CLASS_COLORS[k]}"></span>${man.classes[k]} cells</span><b class="mono">${n.toLocaleString()}</b>`).join('');
   $('scrub').value = meta.i;
   spark();
+  if (man.corridor) drawStrip($('strip'), man, meta.i, fitCanvas);
+  view3d?.setFrame(meta.i);
 }
 
 // sparkline of total ms per scan, 100 ms budget line, current frame marker
@@ -411,6 +483,32 @@ function show(fr) {
   st.shown = fr;
   st.dirty = true;
   inspect();
+  view3d?.show(fr);
+}
+
+// 2D map tab or 3D chase tab. 3D module + vendored three.js load on first use only
+let view3d = null;
+async function setTab(tab) {
+  st.tab = tab;
+  $('tab2d').setAttribute('aria-selected', String(tab === '2d'));
+  $('tab3d').setAttribute('aria-selected', String(tab === '3d'));
+  $('map').hidden = tab !== '2d';
+  $('three').hidden = tab !== '3d';
+  document.querySelectorAll('.only2d').forEach((el) => { el.hidden = tab !== '2d'; });
+  if (tab === '3d') {
+    if (!view3d) {
+      try {
+        const { View3D } = await import('./view3d.js');
+        view3d = new View3D($('three'), man, { $, fill: () => st.fill, fillCtx });
+      } catch (e) {
+        status(`3D view failed to load: ${e.message}`);
+        return;
+      }
+    }
+    view3d.active = true;
+    if (st.shown) view3d.show(st.shown);
+  } else if (view3d) view3d.active = false;
+  st.dirty = true;
 }
 
 // play / pause
@@ -500,7 +598,7 @@ function bindInput() {
     st.s = s;
     st.dirty = true;
   }, { passive: false });
-  window.addEventListener('resize', () => { st.dirty = true; spark(); });
+  window.addEventListener('resize', () => { st.dirty = true; spark(); if (man.corridor) drawStrip($('strip'), man, st.i, fitCanvas); });
 
   $('play').onclick = () => setPlaying(!st.playing);
   $('prev').onclick = () => { setPlaying(false); seek(st.i - 1); };
@@ -508,14 +606,28 @@ function bindInput() {
   $('scrub').oninput = (e) => seek(+e.target.value);
   $('speed').onchange = (e) => { st.speed = +e.target.value; };
   $('reset').onclick = resetView;
-  $('fill').onchange = (e) => { st.fill = e.target.value; $('legend').innerHTML = legendHtml(st.fill, man.classes); st.dirty = true; };
+  $('fill').onchange = (e) => {
+    st.fill = e.target.value;
+    $('legend').innerHTML = legendHtml(st.fill, man.classes);
+    st.dirty = true;
+    view3d?.redraw();
+  };
   $('viewmode').onchange = (e) => {
     st.mode = e.target.value;
     st.anchor = man.frames[st.i].pose.slice(0, 2);
     st.panX = st.panY = 0;
     st.dirty = true;
   };
-  for (const id of ['rings', 'path', 'car', 'corridor']) $(id).onchange = () => { st.dirty = true; };
+  for (const id of ['rings', 'path', 'car', 'corridor', 'points', 'ghosts', 'refined']) {
+    $(id).onchange = () => { st.dirty = true; corridorHud(man.frames[st.i]); view3d?.redraw(); };
+  }
+  $('strip').onclick = (e) => {
+    const r = e.target.getBoundingClientRect();
+    setPlaying(false);
+    seek(Math.floor(((e.clientX - r.left) / r.width) * man.frames.length));
+  };
+  $('tab2d').onclick = () => setTab('2d');
+  $('tab3d').onclick = () => setTab('3d');
   $('spark').onclick = (e) => {
     const r = e.target.getBoundingClientRect();
     setPlaying(false);
@@ -536,6 +648,7 @@ function bindInput() {
       $('viewmode').value = modes[(modes.indexOf(st.mode) + 1) % modes.length];
       $('viewmode').onchange({ target: $('viewmode') });
     } else if (e.key === 'r' || e.key === 'R') resetView();
+    else if (e.key === 't' || e.key === 'T') setTab(st.tab === '3d' ? '2d' : '3d');
     else if (e.key === 'n' || e.key === 'N') stepEvent(1);
     else if (e.key === 'p' || e.key === 'P') stepEvent(-1);
   });
@@ -551,7 +664,8 @@ async function main() {
     status('This browser lacks DecompressionStream (gzip).\nUse current Chrome, Edge, Firefox or Safari.');
     return;
   }
-  const base = replayBase();
+  const scenes = await loadIndex(new URL(REPLAY_ROOT, location.href));
+  const base = replayBase(scenes);
   try {
     man = await loadManifest(base);
   } catch (e) {
@@ -560,7 +674,10 @@ async function main() {
     return;
   }
   store = new FrameStore(base, man);
-  $('slice').textContent = `seq ${man.sequence} · scans ${man.scans[0]}–${man.scans[1]} · model trained on ${man.train}`;
+  fillScenes(scenes, base);
+  fillBadge();
+  $('scene').title = man.synthetic ? 'synthetic scene' : `seq ${man.sequence} · scans ${man.scans[0]}–${man.scans[1]} · model trained on ${man.train}`;
+  $('points').checked = !!man.synthetic;  // sim scenes: points on, real replays: off (busy over labels)
   $('h-cpu').textContent = `Pipeline ms measured during export on ${man.timing.cpu}. ${man.timing.note}`;
   $('h-summary').textContent = `Whole replay (scans 2+): median ${man.timing.total_ms_median} ms, p95 ${man.timing.total_ms_p95} ms, ` +
     `${(man.timing.over_100ms_share * 100).toFixed(1)}% of scans over 100 ms budget.`;

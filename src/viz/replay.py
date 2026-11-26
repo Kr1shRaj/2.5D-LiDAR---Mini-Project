@@ -115,3 +115,37 @@ def decode_frame(buf: bytes, shapes: list[tuple[int, int, int]]) -> list[dict[st
     if at != len(buf):
         raise ValueError(f"frame has {len(buf)} bytes, layout says {at}")
     return out
+
+
+# Point blob (frames/NNNNNN.pts.gz), current scan only, every POINT_STRIDE-th filtered point, world frame:
+#   u32 n, then i2 dx[n], i2 dy[n] (cm from sensor xy), i2 z[n] (world z, cm), i1 h[n] (height over local terrain,
+#   2 cm, NaN sentinel -128 = no terrain there). each array padded to 4 bytes. little endian.
+POINTS_FORMAT = "fovpoints-1"
+POINT_STRIDE = 4
+POINT_COLUMNS: tuple[tuple[str, str, float], ...] = (
+    ("dx", "<i2", 0.01),
+    ("dy", "<i2", 0.01),
+    ("z", "<i2", 0.01),
+    ("h", "<i1", 0.02),
+)
+
+
+# world points + height over terrain -> point blob. xy stored relative to sensor so int16 cm covers +-327 m
+def encode_points(world: np.ndarray, sensor_xy: np.ndarray, h: np.ndarray) -> bytes:
+    cols = {"dx": world[:, 0] - sensor_xy[0], "dy": world[:, 1] - sensor_xy[1], "z": world[:, 2], "h": h}
+    parts = [np.array([len(world)], dtype="<u4").tobytes()]
+    for name, dtype, scale in POINT_COLUMNS:
+        parts.append(quantize(np.asarray(cols[name], dtype=np.float64), dtype, scale).tobytes())
+    return b"".join(p + b"\0" * (pad4(len(p)) - len(p)) for p in parts)
+
+
+# point blob -> name -> float array (dx, dy, z, h). h NaN where no terrain
+def decode_points(buf: bytes) -> dict[str, np.ndarray]:
+    n = int(np.frombuffer(buf, "<u4", 1, 0)[0])
+    out, at = {}, 4
+    for name, dtype, scale in POINT_COLUMNS:
+        out[name] = dequantize(np.frombuffer(buf, np.dtype(dtype), n, at), dtype, scale)
+        at += pad4(n * np.dtype(dtype).itemsize)
+    if at != len(buf):
+        raise ValueError(f"point blob has {len(buf)} bytes, layout says {at}")
+    return out

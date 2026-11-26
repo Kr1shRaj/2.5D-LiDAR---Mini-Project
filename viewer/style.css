@@ -70,3 +70,46 @@ main { display: flex; flex: 1; min-height: 0; }
   #legend { font-size: 11px; max-width: 180px; }
   #panel { width: 100%; border-left: 0; border-top: 1px solid var(--line); }
 }
+
+/* v2: badge, tabs, sim banner, verdict card, strip, bars */
+.badge { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
+.badge.real { color: #3fb950; border-color: #238636; }
+.badge.sim { color: #0d1117; background: #ff4fd8; border-color: #ff4fd8; }
+.tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.tabs button { border: 0; border-radius: 0; padding: 3px 10px; }
+.tabs button[aria-selected=true] { background: var(--accent); color: #0d1117; }
+#simbanner { background: #ff4fd8; color: #0d1117; font-weight: 700; text-align: center; padding: 4px 12px;
+  letter-spacing: 0.03em; }
+#views { position: relative; flex: 1; min-height: 0; display: flex; }
+#views > #map, #views > #three { flex: 1; min-width: 0; }
+#three canvas { display: block; width: 100%; height: 100%; }
+#strip { width: 100%; height: 40px; display: block; cursor: pointer; background: var(--bg); border-top: 1px solid var(--line); }
+.card { position: absolute; right: 12px; top: 12px; width: 300px; background: rgba(13, 17, 23, 0.9);
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; pointer-events: none; }
+.card:empty { display: none; }
+.vline { display: flex; align-items: center; gap: 8px; }
+.vdot { width: 14px; height: 14px; border-radius: 50%; flex: none; }
+.vword { font-size: 20px; font-weight: 700; letter-spacing: 0.02em; }
+.vwhy { color: var(--muted); font-size: 12px; margin: 2px 0 8px 22px; }
+.vrow { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+.vrow span { color: var(--muted); }
+.vtags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); }
+.tag.ok { color: #3fb950; border-color: #238636; }
+.tag.warn { color: #f0883e; border-color: #9e6a03; }
+.tag.bad { color: #0d1117; background: #f85149; border-color: #f85149; }
+.bars { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px; align-items: center; font-size: 12px; }
+.bar { height: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; position: relative; overflow: hidden; }
+.bar i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
+.bar i.over { background: var(--bad); }
+.bars b { font-weight: 500; text-align: right; }
+@media (max-width: 760px) {
+  #stage { height: auto; }
+  #views { flex-direction: column; flex: none; }
+  #views > #map, #views > #three { flex: none; height: 62vh; }
+  .card { position: static; width: auto; margin: 8px; }
+  .toggles { flex-wrap: wrap; gap: 4px 12px; }
+  #legend { display: none; }
+}
+#h-corridor > span { white-space: nowrap; }
+#h-corridor > b { white-space: normal; }
