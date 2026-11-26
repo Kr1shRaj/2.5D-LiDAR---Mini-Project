@@ -113,3 +113,4 @@ main { display: flex; flex: 1; min-height: 0; }
 }
 #h-corridor > span { white-space: nowrap; }
 #h-corridor > b { white-space: normal; }
+.vrow b.bad { color: var(--bad); }

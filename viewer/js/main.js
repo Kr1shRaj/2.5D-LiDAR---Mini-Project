@@ -44,7 +44,7 @@ function fillScenes(scenes, base) {
   const list = scenes ?? [];
   const opts = list.map((s) => {
     const url = new URL(REPLAY_ROOT + s.folder + '/', location.href).href;
-    return `<option value="${REPLAY_ROOT + s.folder}/" ${url === here ? 'selected' : ''}>${s.synthetic ? 'SIM · ' : ''}${s.scene}</option>`;
+    return `<option value="${REPLAY_ROOT + s.folder}/" ${url === here ? 'selected' : ''}>${s.synthetic && !s.scene.startsWith('SIM') ? 'SIM · ' : ''}${s.scene}</option>`;
   });
   if (!list.some((s) => new URL(REPLAY_ROOT + s.folder + '/', location.href).href === here)) {
     opts.unshift(`<option selected>${man.scene ?? `seq ${man.sequence} ${man.scans[0]}-${man.scans[1]}`}</option>`);
@@ -59,7 +59,10 @@ function fillBadge() {
   $('badge').textContent = sim ? 'SIMULATION DEMO (NON-BENCHMARK)' : 'REAL KITTI REPLAY';
   $('badge').className = `badge ${sim ? 'sim' : 'real'}`;
   $('simbanner').hidden = !sim;
-  if (sim) $('cor-note').textContent = 'Synthetic scene. Virtual car follows the cyan picked arc in closed loop. Not a result.';
+  if (sim) {
+    $('cor-note').textContent = 'Synthetic scene. Corridor check (real code) marks arcs; virtual car drives the non-blocked arc ' +
+      'nearest the route (yellow dashed, hidden when same as cyan pick). White boxes = sim truth. Not a result.';
+  }
 }
 
 // view params for frame: car centred (heading up or world axes) or world fixed anchor
@@ -149,6 +152,7 @@ function draw() {
     }
     g.setLineDash([]);
   }
+  if (man.sim) drawSimTruth(g, fr.meta, lw);
   if ($('corridor').checked && man.corridor && fr.meta.corridor) drawCorridor(g, fr.meta, lw);
   if ($('car').checked) {
     const [x, y, , yaw] = fr.meta.pose, [x0, x1, y0, y1] = man.ego_box_velo;
@@ -236,6 +240,36 @@ function drawGhosts(g, meta, lw) {
   g.globalAlpha = 1;
 }
 
+// sim only: road edges + footway edge from synthetic centreline, truth boxes (walls faint, obstacles + movers bold white)
+function drawSimTruth(g, meta, lw) {
+  const sim = man.sim, R = sim.route;
+  const edge = (d) => R.map(([x, y], k) => {
+    const [x2, y2] = R[Math.min(k + 1, R.length - 1)], [x1, y1] = R[Math.max(k - 1, 0)];
+    const h = Math.atan2(y2 - y1, x2 - x1);
+    return [x - d * Math.sin(h), y + d * Math.cos(h)];
+  });
+  g.setLineDash([]);
+  for (const [d, color] of [[sim.road_half_m, '#c9d1d9'], [-sim.road_half_m, '#c9d1d9'], [sim.road_half_m + 3, '#6e7681'], [-sim.road_half_m - 3, '#6e7681']]) {
+    g.beginPath();
+    edge(d).forEach(([x, y], k) => (k ? g.lineTo(x, y) : g.moveTo(x, y)));
+    g.strokeStyle = color;
+    g.lineWidth = lw(1);
+    g.stroke();
+  }
+  const box = ([cx, cy, yaw, L, W, , kind], bold) => {
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    const pts = [[L / 2, W / 2], [-L / 2, W / 2], [-L / 2, -W / 2], [L / 2, -W / 2]].map(([u, v]) => [cx + c * u - s * v, cy + s * u + c * v]);
+    g.beginPath();
+    pts.forEach(([x, y], k) => (k ? g.lineTo(x, y) : g.moveTo(x, y)));
+    g.closePath();
+    g.strokeStyle = bold ? '#ffffff' : 'rgba(201,209,217,0.35)';
+    g.lineWidth = lw(bold ? 2 : 1);
+    g.stroke();
+  };
+  for (const b of sim.boxes) box(b, b[6] !== 'wall');
+  for (const b of meta.sim?.movers ?? []) box(b, true);
+}
+
 // total pipeline ms of frame (corridor only in replays that have it)
 const totalMs = (f) => f.map_ms + f.label_ms + (f.corridor_ms ?? 0);
 
@@ -311,6 +345,17 @@ function drawCorridor(g, meta, lw) {
     g.closePath();
     g.fillStyle = '#39d0f0';
     g.fill();
+  }
+  const ch = meta.sim?.choice;
+  if (man.synthetic && ch >= 0 && ch !== cor.pick) {
+    const pts = arcWorld(c.curvatures[ch], c.length_m, step, meta.pose);
+    g.beginPath();
+    pts.forEach(([x, y], j) => (j ? g.lineTo(x, y) : g.moveTo(x, y)));
+    g.setLineDash([lw(8), lw(4)]);
+    g.strokeStyle = '#ffd33d';
+    g.lineWidth = lw(4);
+    g.stroke();
+    g.setLineDash([]);
   }
 }
 

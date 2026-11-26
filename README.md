@@ -23,7 +23,9 @@ Team guides: [`docs/PERSON_1_GUIDE.md`](docs/PERSON_1_GUIDE.md) (model), [`docs/
 - `src/temporal/` — offline reference accumulation, streaming foveated fusion (decay, ghost clearing, hand-off), local terrain
 - `src/models/` — 2.5D cell features, geometric safety targets, 4-class labels
 - `src/viz/` — top-down elevation + roughness plots, replay frame encoder for the viewer
-- `viewer/` — browser replay of the foveated map (static HTML + JS, reads exported files only). See [`viewer/README.md`](viewer/README.md)
+- `src/planning/` — candidate corridor check (15 arcs scored on the map; reports only, never steers)
+- `src/sim/` — **SIMULATION DEMO (NON-BENCHMARK)**: synthetic street, raycast LiDAR, closed-loop virtual car. See [`docs/SIM_DEMO.md`](docs/SIM_DEMO.md)
+- `viewer/` — browser replay of the foveated map, 2D + 3D chase tabs (static HTML + JS, reads exported files only). See [`viewer/README.md`](viewer/README.md)
 - `tests/` — synthetic tests
 
 ## Real data check (KITTI odometry seq 00)
@@ -52,6 +54,9 @@ python -m scripts.find_corridor_events                     # frames where straig
 
 ```bash
 python -m scripts.export_replay                            # writes outputs/replay/08_1500-1799/ (~124 MB)
+python scripts/fetch_kitti_slice.py --seq 08 --start 2400 --count 300 --out data/kitti_demo   # 3-turn demo slice
+python -m scripts.export_replay --test data/kitti_demo/sequences/08 --scene "seq 08 2400-2699 · 3 turns (test)"
+python -m scripts.run_sim                                  # SIMULATION DEMO (NON-BENCHMARK) scene, pink badge in viewer
 python -m http.server 8000 --bind 127.0.0.1                # open http://127.0.0.1:8000/viewer/
 ```
 

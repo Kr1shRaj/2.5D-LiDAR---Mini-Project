@@ -44,6 +44,17 @@ export function story(man, meta) {
   return { v, why, pick: cor.pick, drv, ref, refWord, drvWord, driverBlocked: drv >= 0 && cor.v[drv] === BLOCKED };
 }
 
+const MODE_WORDS = { drive: 'drives sim arc', creep: 'CREEP: map not seen enough, 1.5 m/s', stop: 'STOP: every arc blocked' };
+
+// sim only: virtual car speed, mode, the arc it drives (yellow). empty for real replays
+function simRows(man, meta, name) {
+  const sm = meta.sim;
+  if (!man.synthetic || !sm) return '';
+  const hit = sm.contact?.length ? `<div class="vrow"><span>Contact (truth)</span><b class="bad">${sm.contact.join(', ')}</b></div>` : '';
+  return `<div class="vrow"><span>Virtual car</span><b>${sm.speed.toFixed(1)} m/s · ${MODE_WORDS[sm.mode] ?? sm.mode}</b></div>` +
+    `<div class="vrow"><span>Sim drives (yellow)</span><b>${sm.choice >= 0 ? name(sm.choice) : '–'}</b></div>` + hit;
+}
+
 // big on-map card + side panel rows
 export function verdictHtml(man, meta) {
   const c = man.corridor;
@@ -55,7 +66,8 @@ export function verdictHtml(man, meta) {
     `<span class="vword" style="color:${color}">STRAIGHT ${c.verdicts[f.v].toUpperCase()}</span></div>` +
     `<div class="vwhy">${f.why}</div>` +
     `<div class="vrow"><span>Candidate</span><b>${f.pick >= 0 ? name(f.pick) : 'NO CLEAR CANDIDATE'}</b></div>` +
-    `<div class="vrow"><span>Driver took</span><b>${f.drv >= 0 ? name(f.drv) : (meta.corridor.drv === undefined ? 'not in replay' : meta.corridor.drv === null ? 'end of slice' : 'sharper than arcs')}</b></div>` +
+    simRows(man, meta, name) +
+    `<div class="vrow"><span>${man.synthetic ? 'Virtual car took' : 'Driver took'}</span><b>${f.drv >= 0 ? name(f.drv) : (meta.corridor.drv === undefined ? 'not in replay' : meta.corridor.drv === null ? 'end of slice' : 'sharper than arcs')}</b></div>` +
     `<div class="vtags">${badge(f.drvWord)}${badge(f.refWord)}</div>`;
   const cor = meta.corridor, row = (k, v) => `<span>${k}</span><b class="mono">${v}</b>`;
   let rows = row('Straight', f.v === BLOCKED ? `BLOCKED at ${cor.b[c.straight].toFixed(1)} m` : c.verdicts[f.v].toUpperCase());

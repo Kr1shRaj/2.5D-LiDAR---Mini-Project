@@ -63,7 +63,9 @@ Replay frames/s is browser speed, not pipeline speed.
 
 - Green **REAL KITTI REPLAY** badge: recorded KITTI scans, real pipeline, the car drove itself.
 - Pink **SIMULATION DEMO (NON-BENCHMARK)** badge + banner: synthetic scene (manifest `"synthetic": true`).
-  Never a result; see `AGENTS.md`, simulation demo exception.
+  Never a result; see `AGENTS.md`, simulation demo exception, and `docs/SIM_DEMO.md`.
+  Sim scenes add: road edges, white truth boxes (obstacles, crossing pedestrian), yellow dashed arc the virtual car
+  drove when it differs from the cyan corridor pick, and virtual car speed + mode (drive / creep / stop) in the card.
 
 ## 2D map and 3D chase tabs (key T)
 

@@ -232,6 +232,19 @@ export class View3D {
         line(pts, 0x39d0f0);
       }
     }
+    if (man.sim) {
+      // sim truth: obstacle + mover boxes as white wire boxes (walls skipped: cells already show them)
+      for (const [bx, by, byaw, L, W, H, kind] of [...man.sim.boxes, ...(fr.meta.sim?.movers ?? [])]) {
+        if (kind === 'wall' || Math.hypot(bx - ox, by - oy) > 60) continue;
+        const e = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(L, W, H)),
+          new THREE.LineBasicMaterial({ color: 0xffffff }));
+        e.position.set(bx - ox, by - oy, H / 2);
+        e.rotation.z = byaw;
+        grp.add(e);
+      }
+      const ch = fr.meta.sim?.choice;
+      if (c && cor && ch >= 0 && ch !== cor.pick) line(arcWorld(c.curvatures[ch], c.length_m, 0.5, fr.meta.pose), 0xffd33d, { dashed: true });
+    }
     if ($('ghosts').checked) {
       const v = [];
       for (let a = 0; a < GHOST_HOLD; a++) {

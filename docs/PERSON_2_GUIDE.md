@@ -71,9 +71,13 @@ Original plan, kept for reference:
   - fewer `np.unique` / `searchsorted` passes in `add_missing` and `merge_children`
   - cache annulus masks per lattice offset
 
-### 5.4 Viewer v2 (after numbers are final)
-- Split screen, uniform vs foveated, synced scrub. About doubles replay size (~250 MB).
-- Optional: corridor tooltip showing per-arc unknown / hazard share on hover.
+### 5.4 Viewer v2 — DONE (2D + 3D chase tab, multi-turn slice, sim demo). Follow-ups:
+- Real multi-turn replay: seq 08 2400–2699 (3 turns, test seq), fetched to `data/kitti_demo/` so benchmark slices stay unchanged.
+- Verdict card + strip show live vs reference vs driver per scan. On that slice: straight live vs reference agree 68 %,
+  pick within one arc of the driver 82.5 % (viewer statistics, not a benchmark row).
+- Simulation demo (NON-BENCHMARK): `docs/SIM_DEMO.md`. Keep it out of every report number.
+- Still open: see-through ghost clearing (map v6, behind flag, keep only if map p95 ≤ 65 ms and ghost area drops);
+  corridor foveated-vs-uniform decision metric in `scripts/eval_corridor.py`; split-screen uniform vs foveated.
 
 ### 5.5 Every change
 - `pytest` green.
