@@ -70,6 +70,69 @@ class FusionParams:
     refine_min_weight: float = 0.0  # cue only from outer cells this confident (decayed scans), noise guard
     refine_budget: int = 0  # max refined outer cells (0 = no cap). steps first, then rough, then obstacle
     refine_every: int = 1  # run cue update + patch seeding every n-th scan (hold time covers the gap)
+    see_through: bool = False  # map v6 flag: range-image check clears obstacle cells this scan's beams pass through
+    see_delta_m: float = 0.3  # beam must come back this much farther than the cell top to count as see-through
+    see_az_deg: float = 0.2  # range image bin, azimuth (HDL-64E ~0.17 deg at 10 Hz)
+    see_el_deg: float = 0.45  # range image bin, elevation (HDL-64E beams 0.33-0.5 deg apart)
+
+
+RIMG_EL_MIN, RIMG_EL_MAX = -26.0, 4.0  # degrees, covers HDL-64E -24.8..+2
+
+
+# range image of one scan (velo frame): nearest return range per (elevation, azimuth) bin, inf = no return there
+def range_image(points_velo: np.ndarray, params: FusionParams) -> np.ndarray:
+    n_el = int(np.ceil((RIMG_EL_MAX - RIMG_EL_MIN) / params.see_el_deg))
+    n_az = int(np.ceil(360.0 / params.see_az_deg))
+    img = np.full(n_el * n_az, np.inf)
+    if len(points_velo):
+        idx, r = rimg_bins(points_velo[:, :3], params)
+        ok = idx >= 0
+        k, rr = idx[ok], r[ok]
+        # one sort on bin + range/1000 (range < 1000 m): first of each bin run = nearest. = np.minimum.at, ~1.5x faster
+        o = np.argsort(k + np.minimum(rr, 999.0) / 1000.0)
+        k, rr = k[o], rr[o]
+        first = np.r_[True, k[1:] != k[:-1]] if k.size else np.zeros(0, dtype=bool)
+        img[k[first]] = rr[first]
+    return img
+
+
+# velo xyz -> flat range image bin (-1 outside elevation span) + range
+def rimg_bins(xyz: np.ndarray, params: FusionParams) -> tuple[np.ndarray, np.ndarray]:
+    rh = np.hypot(xyz[:, 0], xyz[:, 1])
+    r = np.hypot(rh, xyz[:, 2])
+    el = np.degrees(np.arctan2(xyz[:, 2], rh))
+    az = np.degrees(np.arctan2(xyz[:, 1], xyz[:, 0])) + 180.0
+    n_el = int(np.ceil((RIMG_EL_MAX - RIMG_EL_MIN) / params.see_el_deg))
+    n_az = int(np.ceil(360.0 / params.see_az_deg))
+    row = np.floor((el - RIMG_EL_MIN) / params.see_el_deg).astype(np.int64)
+    col = np.minimum(np.floor(az / params.see_az_deg).astype(np.int64), n_az - 1)
+    return np.where((row >= 0) & (row < n_el), row * n_az + col, -1), r
+
+
+# see-through clearing (map v6, flag). obstacle cell (log-odds > 0) NOT hit this scan whose top (centre xy, z max)
+# lies in front of this scan's nearest return in that beam bin by > see_delta_m: beam passed through it = one miss.
+# evidence <= 0 after miss: drop old z max to cell ground. cells hit this scan are never touched (current-return guard:
+# keeps poles / fences whose neighbour beams pass beside them). bins with no return give no evidence.
+def see_through_clear(store: "CellStore", img: np.ndarray, t_velo_world: np.ndarray, t: float,
+                      params: FusionParams) -> tuple["CellStore", int]:
+    cand = np.flatnonzero((store.logodds > 0) & (store.last_seen < t))
+    if not cand.size:
+        return store, 0
+    c = key_centers(store.keys[cand], store.resolution)
+    top = np.column_stack([c, store.z_max[cand], np.ones(cand.size)]) @ t_velo_world.T
+    idx, r_exp = rimg_bins(top[:, :3], params)
+    ok = idx >= 0
+    meas = np.where(ok, img[np.maximum(idx, 0)], np.inf)
+    through = ok & np.isfinite(meas) & (meas > r_exp + params.see_delta_m)
+    if not through.any():
+        return store, 0
+    hit = cand[through]
+    lo = store.logodds.copy()
+    lo[hit] = np.clip(lo[hit] + params.l_miss, params.l_min, params.l_max)
+    zmax = store.z_max.copy()
+    gone = hit[lo[hit] <= 0]
+    zmax[gone] = store.ground[gone]
+    return replace(store, logodds=lo, z_max=zmax), int(gone.size)
 
 
 # sparse cell layers for one band lattice. arrays line up with sorted unique keys.
@@ -524,6 +587,20 @@ class TemporalFoveatedMap:
             if self._scan_no % self.params.refine_every == 0:
                 self._refine_update(t)
             self._refine_ingest(far_pts, terrain, t)
+        if self.params.see_through:  # last: every cell hit this scan already carries last_seen = t (guard)
+            self._see_through(points_velo, t_world_velo, t)
+
+    # map v6 flag: see-through clearing over every store, after all of this scan's hits are in
+    def _see_through(self, points_velo: np.ndarray, t_world_velo: np.ndarray, t: float) -> None:
+        img = range_image(points_velo, self.params)
+        inv = np.linalg.inv(t_world_velo)
+        self.see_cleared = 0
+        for k in range(len(self.stores)):
+            self.stores[k], n = see_through_clear(self.stores[k], img, inv, t, self.params)
+            self.see_cleared += n
+        if self.refine_on:
+            self.fine, n = see_through_clear(self.fine, img, inv, t, self.params)
+            self.see_cleared += n
 
     # feed outer-ring points that fall in refined patches into fine patch lattice (outer store already has them)
     # far_pts = outer ring points incl. its own (wider) edge margin, already picked by integrate

@@ -382,3 +382,45 @@ def test_refinement_off_has_no_overlay() -> None:
     p0 = pose(0.0, 0.0)
     m.integrate(to_velo(curb_road(rng, 50000), p0), p0, t=0.0)
     assert not any(b.overlay for b in m.render().bands) and m.fine.size == 0
+
+
+# wall of points across x = x0 (y +-3 m, ground to +1.5 m over ground): gives beams a far return to pass through to
+def wall(rng: np.random.Generator, x0: float, n: int = 30000) -> np.ndarray:
+    return np.column_stack([np.full(n, x0), rng.uniform(-3, 3, n), rng.uniform(GROUND_Z, GROUND_Z + 3.0, n)])
+
+
+# map v6 see-through: car leaves, ground under it unseen (no return there), beams now reach wall behind.
+# flag off: ghost stays (only decays). flag on: cleared to ground. pole hit every scan never cleared (guard).
+def test_see_through_clears_ghost_keeps_pole() -> None:
+    rng = np.random.default_rng(21)
+    spots = np.array([[8.5, 0.0], [9.5, 0.3]])
+    pole_xy = np.array([[10.05, 2.05]])
+    out = {}
+    for flag in (False, True):
+        m = TemporalFoveatedMap(BANDS, replace(PARAMS, see_through=flag))
+        for i in range(12):
+            g = road(rng, 0.0, 0.0)
+            g = g[~((g[:, 0] > 7.5) & (g[:, 0] < 10.5) & (np.abs(g[:, 1]) < 1.5))]  # dark patch: no ground return
+            pole = np.column_stack([rng.uniform(10.0, 10.1, 400), rng.uniform(2.0, 2.1, 400),
+                                    rng.uniform(GROUND_Z, GROUND_Z + 2.0, 400)])
+            parts = [g, wall(rng, 15.0), pole] + ([box(rng, 8.0, 10.0, -1.0, 1.0)] if i < 3 else [])
+            m.integrate(np.vstack(parts), pose(0.0, 0.0), 0.1 * i)
+        fov = m.render()
+        out[flag] = (fov.sample(spots, "logodds"), fov.sample(spots, "z_max"), fov.sample(pole_xy, "logodds"))
+    lo_off, zmax_off, _ = out[False]
+    lo_on, zmax_on, pole_on = out[True]
+    assert np.all(lo_off > 0) and np.all(zmax_off > GROUND_Z + 1.0)  # without flag: ghost kept
+    assert np.all(lo_on <= 0) and np.all(zmax_on < GROUND_Z + 0.3)  # with flag: cleared
+    assert pole_on[0] > 0  # pole hit every scan: guard keeps it
+
+
+# flag off leaves render bit-identical to map v5 path
+def test_see_through_off_identical() -> None:
+    rng = np.random.default_rng(3)
+    scans = [np.vstack([road(rng, 0.0, 0.0), box(rng, 8.0, 10.0, -1.0, 1.0)]) for _ in range(3)]
+    a, b = TemporalFoveatedMap(BANDS, PARAMS), TemporalFoveatedMap(BANDS, replace(PARAMS, see_through=False))
+    for i, s in enumerate(scans):
+        a.integrate(s, pose(0.0, 0.0), 0.1 * i)
+        b.integrate(s, pose(0.0, 0.0), 0.1 * i)
+    for x, y in zip(a.stores, b.stores):
+        assert np.array_equal(x.logodds, y.logodds) and np.array_equal(x.z_max, y.z_max, equal_nan=True)

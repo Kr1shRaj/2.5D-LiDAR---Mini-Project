@@ -1,4 +1,5 @@
 import argparse
+from dataclasses import replace
 import time
 from pathlib import Path
 
@@ -95,7 +96,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--train", type=Path, default=Path("data/kitti_long/sequences/00"))
     ap.add_argument("--test", type=Path, default=Path("data/kitti_long/sequences/08"))
+    ap.add_argument("--see-through", action="store_true", help="map v6 flag: range-image see-through ghost clearing")
     args = ap.parse_args()
+    if args.see_through:
+        global PARAMS
+        PARAMS = replace(PARAMS, see_through=True)
+        print("MAP FLAG: see-through clearing ON (test maps only; models train on default map)")
 
     models = {}
     for name, bands in MAPS.items():
