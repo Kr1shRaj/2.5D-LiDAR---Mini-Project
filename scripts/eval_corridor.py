@@ -147,6 +147,60 @@ def score(data: dict, cp: CorridorParams) -> dict[str, dict[str, float]]:
     return res
 
 
+UNIFORM = "uniform + model + evidence"
+
+
+# decision metric: does foveation change the corridor decision vs uniform 20 cm map (same model kind, same rules)?
+# per scored scan: straight verdict same, pick same / within one arc, and pick regret on reference:
+#   regret = best reference clear length over reference-pickable arcs - reference clear length of live pick (m).
+#   live pick reference-blocked counts as full regret (arc length). no live pick: scan left out of regret, counted.
+def decision(data: dict, cp: CorridorParams, a: str = MAIN, b: str = UNIFORM) -> dict[str, dict[str, float]]:
+    ref = [score_arcs(r, cp) for r in data["ref"]]
+    live = {c: [score_arcs(lab, cp) for lab in data["labels"][c]] for c in (a, b)}
+    s = len(cp.curvatures) // 2
+    out = {}
+    for c in (a, b):
+        reg = []
+        for lr, rr in zip(live[c], ref):
+            if lr.pick < 0:
+                continue
+            ok = np.isfinite(rr.score)
+            best = rr.block_m[ok].max() if ok.any() else 0.0
+            got = 0.0 if rr.verdict[lr.pick] == BLOCKED else rr.block_m[lr.pick]
+            reg.append(max(best - got, 0.0))
+        reg = np.array(reg)
+        out[c] = {"regret_mean": float(reg.mean()) if reg.size else float("nan"),
+                  "regret_pos": float(np.mean(reg > 0)) if reg.size else float("nan"),
+                  "no_pick": float(np.mean([r.pick < 0 for r in live[c]]))}
+    pa, pb = np.array([r.pick for r in live[a]]), np.array([r.pick for r in live[b]])
+    both = (pa >= 0) & (pb >= 0)
+    out["agreement"] = {
+        "straight_same": float(np.mean([x.verdict[s] == y.verdict[s] for x, y in zip(live[a], live[b])])),
+        "arc_verdict_same": float(np.mean(np.concatenate([x.verdict == y.verdict for x, y in zip(live[a], live[b])]))),
+        "pick_same": float(np.mean(pa == pb)),
+        "pick_within_1": float(np.mean(np.abs(pa[both] - pb[both]) <= 1)) if both.any() else float("nan"),
+    }
+    return out
+
+
+# print decision metric tables
+def decision_table(d: dict, a: str = MAIN, b: str = UNIFORM) -> None:
+    g = d["agreement"]
+    print(f"DECISION: {a} vs {b} (same scans)")
+    print("| straight verdict same | all arc verdicts same | pick same arc | pick within 1 arc (both pick) |")
+    print("|---|---|---|---|")
+    print(f"| {g['straight_same']:.1%} | {g['arc_verdict_same']:.1%} | {g['pick_same']:.1%} | {g['pick_within_1']:.1%} |")
+    print()
+    print("| config | pick regret on reference, mean m | scans with regret > 0 | no candidate |")
+    print("|---|---|---|---|")
+    for c in (a, b):
+        r = d[c]
+        print(f"| {c} | {r['regret_mean']:.2f} | {r['regret_pos']:.1%} | {r['no_pick']:.1%} |")
+    print("regret = best reference clear length over reference-pickable arcs minus reference clear length of live pick "
+          "(reference-blocked pick = 0 m clear). 0 = live pick as good as best arc on truth.")
+    print()
+
+
 # table of scores per config
 def table(title: str, res: dict[str, dict[str, float]]) -> None:
     print(title)
@@ -184,6 +238,8 @@ def main() -> None:
         table(f"min_hits {hits} (window {p.window_m:g} m, stop {p.stop_m:g} m). reference blocked share "
               f"{res[MAIN]['ref_blocked_share']:.1%} of arcs; reference blocks driven arc in "
               f"{res[MAIN]['ref_driven_blocked']:.1%} of scans (truth sanity, want ~0).", res)
+    if not args.tune:
+        decision_table(decision(data, cp))
 
 
 if __name__ == "__main__":

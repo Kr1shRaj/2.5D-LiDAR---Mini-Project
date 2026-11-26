@@ -104,3 +104,16 @@ def test_obstacle_needs_map_evidence() -> None:
     assert r.verdict[STRAIGHT] != BLOCKED and r.hazard[STRAIGHT] > 0
     occ = lambda xy: np.ones(len(xy), dtype=bool)
     assert check_corridor(cone, pose(0.0, 0.0), P, occupied_at=occ).verdict[STRAIGHT] == BLOCKED
+
+
+# decision metric: two configs with identical labels agree fully; clear reference + clear live = zero regret
+def test_decision_metric_identical_configs() -> None:
+    from scripts.eval_corridor import MAIN, UNIFORM, decision
+
+    cp = CorridorParams()
+    n_s, n_l = int(round(cp.length_m / cp.step_m)) + 1, 2 * int(np.ceil(cp.half_width_m / cp.lateral_step_m)) + 1
+    clear = np.zeros((len(cp.curvatures), n_s, n_l), dtype=np.int64)
+    data = {"ref": [clear] * 3, "labels": {MAIN: [clear] * 3, UNIFORM: [clear] * 3}}
+    d = decision(data, cp)
+    assert d["agreement"]["pick_same"] == 1.0 and d["agreement"]["arc_verdict_same"] == 1.0
+    assert d[MAIN]["regret_mean"] == 0.0 and d[UNIFORM]["regret_pos"] == 0.0
